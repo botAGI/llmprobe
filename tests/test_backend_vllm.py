@@ -103,6 +103,57 @@ async def test_detect_high_on_live_full_dump() -> None:
 
 
 @pytest.mark.asyncio
+async def test_detect_zero_on_empty_metrics_body() -> None:
+    # A live run must not raise when /metrics returns an empty body or one that
+    # carries only comment/blank lines: detection resolves to non-vLLM instead
+    # of crashing on a parsing error.
+    metrics = "\n".join(
+        [
+            "# HELP num_requests_running Requests currently running.",
+            "# TYPE num_requests_running gauge",
+        ]
+    )
+    client = _client({"/metrics": (200, metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_detect_zero_on_whitespace_metrics_body() -> None:
+    client = _client({"/metrics": (200, "\n\n   \n  # only a comment\n")})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_read_config_empty_metrics_is_backend_agnostic() -> None:
+    # read_config must not raise a parsing error when the metrics body is empty
+    # or comment-only; the config is still built from /v1/models.
+    models = _fixture_text("vllm_models.json")
+    metrics = "# HELP vllm:num_requests_running Requests running.\n"
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.backend == Backend.VLLM
+    assert config.n_ctx_total == 8192
+    assert config.sources["n_ctx_total"] == Provenance.READ
+
+
+@pytest.mark.asyncio
 async def test_read_config_keeps_max_model_len_on_live_dump() -> None:
     # The reason detection matters: on the live dump the server must resolve to
     # the vLLM backend so max_model_len is preserved as n_ctx_total. Falling

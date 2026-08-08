@@ -22,8 +22,14 @@ VLLM_PREFIX = "vllm:"
 VLLM_DETECT_CONFIDENCE = 0.95
 
 
-def _metric_lines(metrics_text: str) -> list[str]:
-    """Return non-empty, non-comment lines from a Prometheus text dump."""
+def _metric_lines(metrics_text: str | None) -> list[str]:
+    """Return non-empty, non-comment lines from a Prometheus text dump.
+
+    ``None`` and empty/only-comment bodies are treated the same: there are no
+    valid metric lines.
+    """
+    if not metrics_text:
+        return []
     return [
         line.strip()
         for line in metrics_text.splitlines()
@@ -71,8 +77,14 @@ def _parse_vllm_metrics(metrics_text: str) -> dict[str, Any]:
       when present (Prometheus gauges are emitted as floats).
     * ``cache_config_info`` — labels of ``vllm:cache_config_info`` when present.
     """
+    lines = _metric_lines(metrics_text)
+    if not lines:
+        # Empty body or only comment/blank lines: there are no valid metric
+        # samples, so we report an empty metrics dict rather than risk a
+        # parsing failure downstream.
+        return {}
     result: dict[str, Any] = {"is_vllm": False}
-    for line in _metric_lines(metrics_text):
+    for line in lines:
         if not line.startswith(VLLM_PREFIX):
             continue
         # The vllm: namespace alone identifies the server.
