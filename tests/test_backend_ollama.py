@@ -108,3 +108,50 @@ async def test_equal_values_produce_no_finding() -> None:
 
     assert config.n_ctx_total == 4096
     assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_running_model_match_is_case_insensitive_and_trims_whitespace() -> None:
+    """Model names with extra whitespace or different case still match."""
+
+    tags = {"models": [{"name": "  Llama3:8B  "}]}
+    ps = {"models": [{"name": "llama3:8b", "context_length": 4096}]}
+    show = {
+        "model_info": {
+            "general.arch": "llama",
+            "llama.context_length": 32768,
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=tags)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json=ps)
+        if request.url.path == "/api/show":
+            assert json.loads(request.read()).get("name") == "llama3:8b"
+            return httpx.Response(200, json=show)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(
+        base_url="http://ollama.test", transport=httpx.MockTransport(handler)
+    )
+    try:
+        config, findings = await read_config(client, "http://ollama.test")
+    finally:
+        await client.aclose()
+
+    assert config.model_id == "llama3:8b"
+    assert config.n_ctx_total == 4096
+    assert findings == [
+        Finding(
+            severity=Severity.MISMATCH,
+            code="OLLAMA_CTX_DOWNGRADE",
+            advertised=32768,
+            measured=4096,
+            message=(
+                "model 'llama3:8b' is loaded with a smaller context (4096) "
+                "than its trained context (32768)"
+            ),
+        )
+    ]

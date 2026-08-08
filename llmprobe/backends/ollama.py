@@ -86,6 +86,14 @@ async def detect(client: httpx.AsyncClient, base_url: str) -> float:
     return 1.0 if _is_tags_shape(payload) else 0.0
 
 
+def _norm(name: str | None) -> str | None:
+    """Normalize a model name for comparisons: trim whitespace, lowercase."""
+    if not isinstance(name, str):
+        return None
+    stripped = name.strip()
+    return stripped.lower() if stripped else None
+
+
 def _model_names(payload: dict[str, Any]) -> list[str]:
     models = payload.get("models")
     if not isinstance(models, list):
@@ -93,7 +101,7 @@ def _model_names(payload: dict[str, Any]) -> list[str]:
     names: list[str] = []
     for item in models:
         if isinstance(item, dict) and isinstance(item.get("name"), str):
-            names.append(item["name"])
+            names.append(item["name"].strip())
     return names
 
 
@@ -103,12 +111,13 @@ def _first_running_model(ps: dict[str, Any] | None, names: list[str]) -> str | N
     models = ps.get("models")
     if not isinstance(models, list):
         return None
+    normalized = {_norm(n) for n in names if _norm(n) is not None}
     for item in models:
         if not isinstance(item, dict):
             continue
-        name = item.get("name")
-        if isinstance(name, str) and name in names:
-            return name
+        norm = _norm(item.get("name"))
+        if norm is not None and norm in normalized:
+            return item["name"]
     return None
 
 
@@ -184,8 +193,9 @@ async def read_config(
     if running is not None:
         ps_model: dict[str, Any] | None = None
         if ps is not None:
+            running_norm = _norm(running)
             for item in ps.get("models", []):
-                if isinstance(item, dict) and item.get("name") == running:
+                if isinstance(item, dict) and _norm(item.get("name")) == running_norm:
                     ps_model = item
                     break
         loaded_ctx = _loaded_context(ps_model)
