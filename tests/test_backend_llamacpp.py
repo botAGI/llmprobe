@@ -109,7 +109,19 @@ async def test_every_numeric_field_has_provenance() -> None:
             assert isinstance(config.sources[field], Provenance)
 
 
-async def test_read_config_tolerates_extra_unknown_field() -> None:
+async def test_read_config_ignores_extra_unknown_keys() -> None:
+    props = _load_props()
+    props["some_future_field"] = "irrelevant"
+    props["another_unknown"] = 123
+    async with _client(props=props) as client:
+        config = await read_config(client, BASE_URL)
+        assert config is not None
+        assert config.backend == Backend.LLAMACPP
+        assert config.total_slots == 4
+        assert config.n_ctx_per_slot == 8192
+
+
+async def test_read_config_tolerates_nested_unknown_field() -> None:
     props = _load_props()
     props["some_future_unknown_field"] = {"nested": [1, 2, 3]}
     async with _client(props=props) as client:
@@ -120,7 +132,7 @@ async def test_read_config_tolerates_extra_unknown_field() -> None:
         assert config.n_ctx_per_slot == 8192
 
 
-async def test_read_config_tolerates_missing_field() -> None:
+async def test_read_config_tolerates_missing_model() -> None:
     props = _load_props()
     props.pop("model")
     async with _client(props=props) as client:
@@ -128,4 +140,37 @@ async def test_read_config_tolerates_missing_field() -> None:
         assert config is not None
         assert config.backend == Backend.LLAMACPP
         assert config.model_id == ""
+        assert config.total_slots == 4
+
+
+async def test_read_config_defaults_missing_required_fields() -> None:
+    props = _load_props()
+    props.pop("default_generation_settings")
+    props.pop("total_slots")
+    props.pop("model")
+    async with _client(props=props) as client:
+        config = await read_config(client, BASE_URL)
+        assert config.total_slots is None
+        assert config.n_ctx_per_slot is None
+        assert config.model_id == ""
+        assert config.sources["n_ctx_total"] == Provenance.UNKNOWN
+        assert "total_slots" not in config.sources
+        assert "n_ctx_per_slot" not in config.sources
+
+
+async def test_read_config_handles_non_dict_props_payload() -> None:
+    async with _client(props=["not", "a", "dict"]) as client:
+        config = await read_config(client, BASE_URL)
+        assert config.total_slots is None
+        assert config.n_ctx_per_slot is None
+        assert config.model_id == ""
+
+
+async def test_read_config_handles_non_dict_default_settings() -> None:
+    props = _load_props()
+    props["default_generation_settings"] = ["not", "a", "dict"]
+    async with _client(props=props) as client:
+        config = await read_config(client, BASE_URL)
+        assert config.n_ctx_per_slot is None
+        assert "n_ctx_per_slot" not in config.sources
         assert config.total_slots == 4

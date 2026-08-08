@@ -49,9 +49,17 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
 
     resp = await client.get(f"{base}/props")
     resp.raise_for_status()
-    props = resp.json()
+    payload = resp.json()
 
-    default_settings = props.get("default_generation_settings") or {}
+    # The payload is expected to be a JSON object. A live server returning an
+    # unexpected shape (array, scalar, plain whitespace) must not crash a probe:
+    # treat anything that is not a dict as if it were an empty one so every
+    # field below falls back to its default.
+    props = payload if isinstance(payload, dict) else {}
+
+    default_settings = props.get("default_generation_settings")
+    if not isinstance(default_settings, dict):
+        default_settings = {}
     n_ctx_per_slot = default_settings.get("n_ctx")
     total_slots = props.get("total_slots")
     model_id = str(props.get("model") or "")
