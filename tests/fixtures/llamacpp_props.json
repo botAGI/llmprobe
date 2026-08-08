@@ -1,0 +1,24 @@
+{
+  "total_slots": 4,
+  "model": "mock/llama-3.1-8b",
+  "model_path": "/models/llama-3.1-8b-instruct.gguf",
+  "chat_template": "mock-chat-template",
+  "version": "0.0.0",
+  "system_prompt": "You are a helpful assistant.",
+  "n_ctx": 8192,
+  "n_parallel": 4,
+  "default_generation_settings": {
+    "n_ctx": 8192,
+    "n_predict": -1,
+    "temperature": 0.8,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "seed": 42
+  },
+  "build_info": {
+    "build": 0,
+    "commit": "1234abcdef",
+    "version": "0.0.0"
+  }
+}
