@@ -107,3 +107,25 @@ async def test_every_numeric_field_has_provenance() -> None:
         for field in numeric_fields:
             assert field in config.sources
             assert isinstance(config.sources[field], Provenance)
+
+
+async def test_read_config_tolerates_extra_unknown_field() -> None:
+    props = _load_props()
+    props["some_future_unknown_field"] = {"nested": [1, 2, 3]}
+    async with _client(props=props) as client:
+        config = await read_config(client, BASE_URL)
+        assert config is not None
+        assert config.backend == Backend.LLAMACPP
+        assert config.total_slots == 4
+        assert config.n_ctx_per_slot == 8192
+
+
+async def test_read_config_tolerates_missing_field() -> None:
+    props = _load_props()
+    props.pop("model")
+    async with _client(props=props) as client:
+        config = await read_config(client, BASE_URL)
+        assert config is not None
+        assert config.backend == Backend.LLAMACPP
+        assert config.model_id == ""
+        assert config.total_slots == 4
