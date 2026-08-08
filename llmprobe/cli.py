@@ -43,6 +43,9 @@ app = typer.Typer(
 
 _console = Console()
 
+#: Default per-request timeout in seconds (applied to every HTTP request).
+DEFAULT_TIMEOUT = 10.0
+
 
 class Endpoint(str, Enum):
     """Which inference endpoint the capacity probe should exercise."""
@@ -91,13 +94,15 @@ def _capacity_findings(
     ]
 
 
-def _make_client(base_url: str) -> httpx.AsyncClient:
+def _make_client(base_url: str, timeout: float = DEFAULT_TIMEOUT) -> httpx.AsyncClient:
     """Create a fresh client bound to ``base_url``.
 
     This factory is the test seam: hermetic tests replace it with a client
-    wired to an ``ASGITransport`` over the mock server.
+    wired to an ``ASGITransport`` over the mock server. The ``timeout`` is
+    applied to every HTTP request the client issues, so callers thread it
+    through to bound all requests.
     """
-    return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(10.0))
+    return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(timeout))
 
 
 async def _assert_reachable(client: httpx.AsyncClient) -> None:
@@ -117,9 +122,10 @@ async def probe(
     claimed_ctx: int | None,
     do_probe: bool,
     endpoint: Endpoint,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> ProbeReport:
     """Run the configured read and optional capacity probe, then assemble a report."""
-    async with _make_client(base_url) as client:
+    async with _make_client(base_url, timeout) as client:
         await _assert_reachable(client)
         config, findings = await read_effective_config(
             client, base_url, claimed_ctx
@@ -181,10 +187,21 @@ def main(
         Endpoint,
         typer.Option("--endpoint", help="Which endpoint to probe."),
     ] = Endpoint.AUTO,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Per-request timeout in seconds applied to every HTTP request."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
     try:
-        report = asyncio.run(probe(base_url, claimed_ctx, probe_flag, endpoint))
+        report = asyncio.run(
+            probe(base_url, claimed_ctx, probe_flag, endpoint, timeout)
+        )
     except httpx.HTTPError as exc:
         typer.echo(f"llmprobe: unreachable or failed server: {exc}", err=True)
         raise typer.Exit(code=2) from exc

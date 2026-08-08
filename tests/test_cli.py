@@ -29,11 +29,11 @@ runner = CliRunner()
 
 
 def _asgi_client(app: object):
-    def make(_base_url: str) -> httpx.AsyncClient:
+    def make(_base_url: str, timeout: float = 10.0) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
             transport=httpx.ASGITransport(app=app),
-            timeout=httpx.Timeout(10.0),
+            timeout=httpx.Timeout(timeout),
         )
 
     return make
@@ -55,6 +55,7 @@ def test_cli_options_are_declared() -> None:
     assert "--probe" in opts
     assert "--json" in opts
     assert "--endpoint" in opts
+    assert "--timeout" in opts
 
 
 def test_safe_is_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,3 +133,27 @@ def test_unreachable_server_exits_2() -> None:
     """A server that cannot be reached => exit 2 with no report."""
     result = runner.invoke(cli.app, ["http://127.0.0.1:1", "--json"])
     assert result.exit_code == 2
+
+
+def test_timeout_is_threaded_into_every_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--timeout`` is forwarded to the client factory bound to each request."""
+    captured: dict[str, float] = {}
+
+    def capturing_client(
+        _base_url: str, timeout: float = cli.DEFAULT_TIMEOUT
+    ) -> httpx.AsyncClient:
+        captured["timeout"] = timeout
+        return httpx.AsyncClient(
+            base_url=BASE_URL,
+            transport=httpx.ASGITransport(
+                app=make_mock_server(max_tokens=512, behavior="honest")
+            ),
+            timeout=httpx.Timeout(timeout),
+        )
+
+    monkeypatch.setattr(cli, "_make_client", capturing_client)
+    result = runner.invoke(cli.app, [BASE_URL, "--timeout", "3.5", "--json"])
+    assert result.exit_code == 0
+    assert captured["timeout"] == 3.5
