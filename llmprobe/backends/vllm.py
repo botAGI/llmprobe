@@ -136,8 +136,11 @@ async def read_config(
     over its HTTP API, so those fields stay unset with provenance ``unknown``.
     """
     models_resp = await client.get(f"{base_url}/v1/models")
-    models_resp.raise_for_status()
-    models = models_resp.json()
+    try:
+        models_resp.raise_for_status()
+        models = models_resp.json()
+    except (httpx.HTTPError, ValueError):
+        models = {}
     data = models.get("data") or []
     entry = data[0] if data else {}
     model_id = str(entry.get("id", ""))
