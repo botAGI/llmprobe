@@ -13,6 +13,10 @@ other hermetic test does.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import httpx
 import pytest
 from typer.testing import CliRunner
@@ -102,3 +106,35 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
         assert any(marker in row for marker in _PROVENANCE_MARKERS), (
             f"table data row lacks a provenance marker: {row!r}"
         )
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def test_pip_install_then_help_is_zero(tmp_path: Path) -> None:
+    """The wheel builds, installs into a clean venv, and the CLI answers help."""
+    venv_dir = tmp_path / "venv"
+    _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)]).check_returncode()
+
+    venv_python = venv_dir / "bin" / "python"
+    venv_llmprobe = venv_dir / "bin" / "llmprobe"
+
+    install = _run(
+        [str(venv_python), "-m", "pip", "install", "--no-deps", str(_PROJECT_ROOT)]
+    )
+    assert install.returncode == 0, install.stdout + install.stderr
+    assert venv_llmprobe.exists(), "llmprobe console script was not installed"
+
+    help_run = _run([str(venv_llmprobe), "--help"])
+    assert help_run.returncode == 0, help_run.stdout + help_run.stderr
+    assert "Usage:" in help_run.stdout
