@@ -143,6 +143,26 @@ def test_every_table_data_row_has_a_provenance_marker() -> None:
             )
 
 
+def test_unknown_model_id_renders_source_unknown_not_read() -> None:
+    """An unread model id must not be labelled ``read`` (honesty rule).
+
+    A generic backend that cannot learn a model id reports ``model_id=""``.
+    The report must surface that as ``unknown`` rather than claiming the
+    server told us the value.
+    """
+    cfg = EffectiveConfig(
+        backend=Backend.GENERIC,
+        model_id="",
+        sources={},
+    )
+    report = ProbeReport(base_url="http://x", config=cfg, capacity=[])
+    md = to_markdown(report)
+    model_row = next(
+        row for row in _table_data_rows(md) if row.startswith("| model |")
+    )
+    assert "| model | unknown | unknown | unknown | unknown |" == model_row
+
+
 def test_no_fix_section_when_nothing_wrong() -> None:
     assert "## Fix" not in to_markdown(_clean_report())
 

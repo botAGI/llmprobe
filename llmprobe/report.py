@@ -143,8 +143,11 @@ def to_markdown(report: ProbeReport) -> str:
         f"{Provenance.READ.value} | ok |"
     )
     model = config.model_id if config.model_id else "unknown"
+    model_source = (
+        Provenance.READ.value if config.model_id else Provenance.UNKNOWN.value
+    )
     rows.append(
-        f"| model | {model} | {model} | {Provenance.READ.value} | "
+        f"| model | {model} | {model} | {model_source} | "
         f"{'ok' if config.model_id else 'unknown'} |"
     )
     rows.append(
