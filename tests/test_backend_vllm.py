@@ -50,6 +50,63 @@ async def test_detect_high_on_vllm_metrics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_detect_high_on_realistic_float_metrics() -> None:
+    # Live vLLM instances emit gauge values as floats (e.g. 3.0, 1.0), not
+    # integers. Detection must not depend on an integer-looking sample, and
+    # must trigger on the vllm: namespace alone even when only a single gauge
+    # is exposed.
+    metrics = "\n".join(
+        [
+            "# HELP vllm:num_requests_running Requests currently running.",
+            "# TYPE vllm:num_requests_running gauge",
+            "vllm:num_requests_running 3.0",
+        ]
+    )
+    client = _client({"/metrics": (200, metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_detect_high_on_cache_config_info_labels() -> None:
+    # Detection must hold even when the only vllm: line carries a label block
+    # attached to the metric name, which is how vLLM emits cache_config_info.
+    metrics = (
+        'vllm:cache_config_info{block_size="16",cache_dtype="auto",'
+        'gpu_memory_utilization="0.9",num_gpu_blocks="4096",'
+        'num_cpu_blocks="256",swap_space_bytes="4294967296"} 1.0'
+    )
+    client = _client({"/metrics": (200, metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_detect_zero_on_plain_text_metrics() -> None:
+    # A metrics endpoint that is reachable but carries no vllm: namespace is
+    # not a vLLM server, regardless of how many data lines it exposes.
+    plain = "\n".join(
+        [
+            "# HELP num_requests_running Requests running.",
+            "# TYPE num_requests_running gauge",
+            "num_requests_running 3.0",
+        ]
+    )
+    client = _client({"/metrics": (200, plain)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
 async def test_detect_zero_on_llamacpp_metrics() -> None:
     # llama.cpp-style metrics carry no vllm: prefix.
     llamacpp_metrics = "\n".join(

@@ -48,31 +48,45 @@ def _labels(text: str) -> dict[str, str]:
     return labels
 
 
+def _to_float(value: str) -> float | None:
+    """Best-effort parse of a Prometheus sample value to a float."""
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def _parse_vllm_metrics(metrics_text: str) -> dict[str, Any]:
     """Parse the vLLM metrics fields we care about.
+
+    vLLM's Prometheus endpoint namespaces every metric with the ``vllm:``
+    prefix. The presence of any such line is itself the detection signal; we
+    never require a specific metric to be present, because live servers vary
+    by version and some metrics may be disabled.
 
     Returns a dict with:
 
     * ``is_vllm`` — True if any metric line carries the ``vllm:`` prefix.
-    * ``num_requests_running`` — int value of ``vllm:num_requests_running``
-      when present.
+    * ``num_requests_running`` — float value of ``vllm:num_requests_running``
+      when present (Prometheus gauges are emitted as floats).
     * ``cache_config_info`` — labels of ``vllm:cache_config_info`` when present.
     """
     result: dict[str, Any] = {"is_vllm": False}
     for line in _metric_lines(metrics_text):
         if not line.startswith(VLLM_PREFIX):
             continue
+        # The vllm: namespace alone identifies the server.
+        result["is_vllm"] = True
         body = line[len(VLLM_PREFIX) :]
-        name, _, value = body.partition(" ")
+        name_part, _, value = body.partition(" ")
+        # Drop any Prometheus label block from the metric name before matching.
+        name = name_part.split("{", 1)[0].rstrip()
         value = value.strip()
-        if name == "num_requests_running" and value.isdigit():
-            result["is_vllm"] = True
-            try:
-                result["num_requests_running"] = int(value)
-            except ValueError:
-                pass
+        if name == "num_requests_running":
+            parsed = _to_float(value)
+            if parsed is not None:
+                result["num_requests_running"] = parsed
         elif name == "cache_config_info":
-            result["is_vllm"] = True
             result["cache_config_info"] = _labels(body)
     return result
 
