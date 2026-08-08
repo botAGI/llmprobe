@@ -1,0 +1,114 @@
+"""Shared pydantic v2 contracts for llmprobe.
+
+Pure data models only: no I/O, no network, no imports from other llmprobe
+modules. Every reported value carries a provenance marker
+(see the ``Provenance`` enum and ``EffectiveConfig.sources``).
+"""
+
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class Backend(str, Enum):
+    """Inference backends llmprobe is able to probe."""
+
+    LLAMACPP = "llamacpp"
+    VLLM = "vllm"
+    OLLAMA = "ollama"
+    GENERIC = "generic"
+
+
+class Provenance(str, Enum):
+    """How a reported value was obtained.
+
+    - READ: the server told us the value directly.
+    - MEASURED: we probed the value ourselves.
+    - INFERRED: derived from other values.
+    - UNKNOWN: we could not tell.
+    """
+
+    READ = "read"
+    MEASURED = "measured"
+    INFERRED = "inferred"
+    UNKNOWN = "unknown"
+
+
+class EffectiveConfig(BaseModel):
+    """The configuration effectively in force on a probed server.
+
+    Numeric fields are Optional because a backend may not expose them. Each
+    numeric field MUST have a corresponding provenance entry in ``sources``.
+    """
+
+    backend: Backend
+    model_id: str
+    n_ctx_total: Optional[int] = None
+    n_ctx_per_slot: Optional[int] = None
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
+    total_slots: Optional[int] = None
+
+    sources: dict[str, Provenance] = Field(
+        default_factory=dict,
+        description="Provenance marker for each numeric field name.",
+    )
+
+
+class CliffBehavior(str, Enum):
+    """How the server behaves when context length is exceeded."""
+
+    ACCEPTED = "accepted"
+    SILENT_TRUNCATION = "silent_truncation"
+    HARD_ERROR = "hard_error"
+
+
+class CapacityResult(BaseModel):
+    """Outcome of probing a single endpoint's real capacity."""
+
+    endpoint: str
+    max_accepted_tokens: int
+    cliff_behavior: CliffBehavior
+    probe_requests_used: int
+
+
+class Severity(str, Enum):
+    """Severity of a finding."""
+
+    INFO = "info"
+    MISMATCH = "mismatch"
+    ERROR = "error"
+
+
+class Finding(BaseModel):
+    """A single discrepancy (or note) discovered during a probe."""
+
+    severity: Severity
+    code: str
+    advertised: str | int | None = None
+    measured: str | int | None = None
+    message: str
+
+
+class ProbeReport(BaseModel):
+    """Full result of probing a base_url."""
+
+    base_url: str
+    config: EffectiveConfig
+    capacity: list[CapacityResult]
+    findings: list[Finding] = Field(default_factory=list)
+
+    @property
+    def exit_code(self) -> int:
+        """Process exit code derived from findings.
+
+        2 if any finding has severity ERROR,
+        else 1 if any finding has severity MISMATCH,
+        else 0.
+        """
+        if any(f.severity == Severity.ERROR for f in self.findings):
+            return 2
+        if any(f.severity == Severity.MISMATCH for f in self.findings):
+            return 1
+        return 0
