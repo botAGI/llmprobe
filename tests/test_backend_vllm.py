@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llmprobe.backends.vllm import detect, read_config
+from llmprobe.backends.vllm import _parse_vllm_metrics, detect, read_config
 from llmprobe.models import Backend, Provenance
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -242,3 +242,23 @@ async def test_read_config_maps_max_model_len_to_n_ctx_total() -> None:
     assert config.model_id == "meta-llama/Llama-3-8B-Instruct"
     assert config.n_ctx_total == 8192
     assert config.sources["n_ctx_total"] == Provenance.READ
+
+
+def test_parse_vllm_metrics_empty_string_returns_no_metrics() -> None:
+    # A metrics endpoint that returns an empty body must be handled without
+    # raising and must not be misidentified as vLLM.
+    result = _parse_vllm_metrics("")
+    assert result == {}
+
+
+def test_parse_vllm_metrics_comments_only_returns_no_metrics() -> None:
+    # A body containing only HELP/TYPE comment lines carries no vllm: samples,
+    # so it must be handled without raising and must not be misidentified.
+    comments_only = "\n".join(
+        [
+            "# HELP num_requests_running Requests running.",
+            "# TYPE num_requests_running gauge",
+        ]
+    )
+    result = _parse_vllm_metrics(comments_only)
+    assert result == {}
