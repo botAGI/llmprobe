@@ -173,11 +173,108 @@ def test_fix_section_emits_batch_ubatch_flags_from_measured_cliff() -> None:
     assert "## Fix" in md
 
 
+def test_sensitive_credentials_in_base_url_are_not_printed() -> None:
+    """URL-embedded credentials (API keys) must be stripped from the report.
+
+    A base URL like ``http://sk-1234@host/v1`` carries an API key in the
+    userinfo slot; the capability card must not leak it into issues/logs.
+    """
+    for raw, expected in (
+        ("http://sk-abc123@localhost:8080", "http://localhost:8080"),
+        ("http://user:secret-pw@host:11434", "http://host:11434"),
+        ("http://user:token@host/path?v=1", "http://host/path?v=1"),
+    ):
+        report = ProbeReport(
+            base_url=raw,
+            config=EffectiveConfig(
+                backend=Backend.OLLAMA,
+                model_id="mock",
+                sources={},
+            ),
+            capacity=[],
+        )
+        md = to_markdown(report)
+        assert f"# Capability Report — {expected}" in md
+        assert raw not in md
+
+
+def test_plain_base_url_is_left_untouched() -> None:
+    report = ProbeReport(
+        base_url="http://localhost:8080",
+        config=EffectiveConfig(
+            backend=Backend.LLAMACPP,
+            model_id="mock",
+            sources={},
+        ),
+        capacity=[],
+    )
+    md = to_markdown(report)
+    assert "# Capability Report — http://localhost:8080" in md
+
+
 def test_to_json_round_trips_through_model() -> None:
     report = _clean_report()
     dumped = to_json(report)
     reloaded = ProbeReport.model_validate_json(dumped)
     assert reloaded == report
+
+
+def test_user_provided_strings_are_escaped_against_markdown_injection() -> None:
+    """Markdown meta-characters in untrusted strings must not inject structure.
+
+    A model name / base URL / endpoint supplied by the server (or the user)
+    may contain backticks, pipes, asterisks, brackets or a leading hash.
+    Each must be backslash-escaped so it cannot break out of a table cell or
+    create headings/emphasis/inline code in the capability card.
+    """
+    cfg = EffectiveConfig(
+        backend=Backend.LLAMACPP,
+        model_id="meta/llama-3.1-8b | **bold** `code` #x",
+        n_ctx_total=8192,
+        n_ctx_per_slot=2048,
+        total_slots=4,
+        sources={
+            "n_ctx_total": Provenance.READ,
+            "n_ctx_per_slot": Provenance.READ,
+            "total_slots": Provenance.READ,
+        },
+    )
+    report = ProbeReport(
+        base_url="http://host/path|with|pipes",
+        config=cfg,
+        capacity=[
+            CapacityResult(
+                endpoint="/completion *suffix",
+                max_accepted_tokens=8192,
+                cliff_behavior=CliffBehavior.ACCEPTED,
+                probe_requests_used=3,
+            )
+        ],
+        findings=[
+            Finding(
+                severity=Severity.MISMATCH,
+                code="BATCH_CEILING",
+                advertised="a | b",
+                measured="c `d",
+                message="secret `API_KEY` leaked|here",
+            )
+        ],
+    )
+
+    md = to_markdown(report)
+    model_row = next(
+        row for row in _table_data_rows(md) if row.startswith("| model |")
+    )
+    assert "| model | meta/llama-3.1-8b \\| \\*\\*bold\\*\\* \\`code\\` \\#x |" in model_row
+    assert not any(
+        token in model_row
+        for token in ("| **bold** `code` #x", "meta/llama-3.1-8b |")
+    )
+    assert "# Capability Report — http://host/path\\|with\\|pipes" in md
+    assert "(/completion \\*suffix)" in md
+    assert "advertised=a \\| b vs measured=c \\`d" in md
+    assert "secret \\`API\\_KEY\\` leaked\\|here" in md
+    assert "\\#x" in md
 
 
 def test_to_json_is_compact_json() -> None:

@@ -9,7 +9,7 @@ without a marker is a bug.
 
 from __future__ import annotations
 
-import re
+from urllib.parse import urlsplit, urlunsplit
 
 from llmprobe.models import (
     CliffBehavior,
@@ -22,14 +22,12 @@ _SEPARATOR_ROW = "| --- | --- | --- | --- | --- |"
 
 _CEILING_CODE_SUBSTRINGS = ("BATCH", "UBATCH", "CEILING")
 
-# A base URL may carry a credential inline (https://user:pass@host). The card
-# header echoes the URL, so the userinfo block must be stripped for display.
-_USERINFO_RE = re.compile(r"(//[^/@]+@)")
-
-
-def _display_url(base_url: str) -> str:
-    """Return ``base_url`` stripped of any inline userinfo credentials."""
-    return _USERINFO_RE.sub("//", base_url)
+# Markdown meta-characters that can inject structure (headings, emphasis,
+# code, links, HTML, table separators) when a user- or server-provided string
+# is interpolated verbatim into the card. Controlled internal identifiers
+# (finding codes, enum values) are intentionally not treated as untrusted, so
+# the set deliberately leaves ``-``/``.`` untouched.
+_MD_INJECTION_CHARS = set("\\`*_[]()#+!|<>~{}")
 
 
 def _is_ceiling_finding(code: str) -> bool:
@@ -63,6 +61,43 @@ def _fmt(value: object) -> str:
     return str(value)
 
 
+def _esc(value: object) -> str:
+    """Escape untrusted text before it is interpolated into markdown.
+
+    Backslash-escapes every markdown meta-character so a user- or
+    server-provided string (model name, base URL, endpoint, finding message)
+    cannot inject headings, emphasis, inline code, links, HTML, or break out
+    of a table cell. ``None`` renders as the honest ``unknown`` marker.
+    """
+    if value is None:
+        return "unknown"
+    out: list[str] = []
+    for ch in str(value):
+        if ch in _MD_INJECTION_CHARS:
+            out.append("\\")
+        out.append(ch)
+    return "".join(out)
+
+
+def _sanitize_base_url(url: str) -> str:
+    """Strip URL-embedded credentials so API keys are never printed.
+
+    A base URL may carry a secret in its userinfo slot, e.g.
+    ``http://sk-1234@localhost:8080`` or ``http://user:token@host/v1``. The
+    report is pasted into issues and logs, so the credentials must not leak.
+    URLs without userinfo are returned unchanged.
+    """
+    parts = urlsplit(url if "://" in url else f"//{url}")
+    if not (parts.username or parts.password):
+        return url
+    hostname = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    cleaned = urlunsplit(
+        (parts.scheme, f"{hostname}{port}", parts.path, parts.query, parts.fragment)
+    )
+    return cleaned if cleaned else url
+
+
 def _config_numeric_row(
     label: str,
     value: int | None,
@@ -79,12 +114,13 @@ def _capacity_rows(report: ProbeReport) -> list[str]:
     rows: list[str] = []
     for cap in report.capacity:
         ceil = _cliff_verdict(cap.cliff_behavior)
+        endpoint = _esc(cap.endpoint)
         rows.append(
-            f"| max input tokens ({cap.endpoint}) | unknown | "
+            f"| max input tokens ({endpoint}) | unknown | "
             f"{_fmt(cap.max_accepted_tokens)} | {Provenance.MEASURED.value} | ok |"
         )
         rows.append(
-            f"| cliff behaviour ({cap.endpoint}) | unknown | "
+            f"| cliff behaviour ({endpoint}) | unknown | "
             f"{cap.cliff_behavior.value} | {Provenance.MEASURED.value} | {ceil} |"
         )
     return rows
@@ -103,11 +139,11 @@ def _finding_lines(report: ProbeReport) -> list[str]:
         return []
     lines = ["## Findings", ""]
     for finding in report.findings:
-        adv = _fmt(finding.advertised)
-        meas = _fmt(finding.measured)
+        adv = _esc(finding.advertised)
+        meas = _esc(finding.measured)
         lines.append(
             f"- **[{finding.severity.value}] {finding.code}**: "
-            f"advertised={adv} vs measured={meas} — {finding.message}"
+            f"advertised={adv} vs measured={meas} — {_esc(finding.message)}"
         )
     return lines
 
@@ -142,18 +178,19 @@ def _fix_lines(report: ProbeReport) -> list[str]:
 def to_markdown(report: ProbeReport) -> str:
     """Render the report as a tight, honest markdown capability card."""
     rows: list[str] = [
-        f"# Capability Report — {_display_url(report.base_url)}",
+        f"# Capability Report — {_esc(_sanitize_base_url(report.base_url))}",
         "",
         _HEADER_ROW,
         _SEPARATOR_ROW,
     ]
 
     config = report.config
+    backend = _esc(config.backend.value)
     rows.append(
-        f"| backend | {config.backend.value} | {config.backend.value} | "
+        f"| backend | {backend} | {backend} | "
         f"{Provenance.READ.value} | ok |"
     )
-    model = config.model_id if config.model_id else "unknown"
+    model = _esc(config.model_id) if config.model_id else "unknown"
     model_source = (
         Provenance.READ.value if config.model_id else Provenance.UNKNOWN.value
     )
