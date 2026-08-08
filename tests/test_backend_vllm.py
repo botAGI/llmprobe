@@ -88,6 +88,44 @@ async def test_detect_high_on_cache_config_info_labels() -> None:
 
 
 @pytest.mark.asyncio
+async def test_detect_high_on_live_full_dump() -> None:
+    # Regression: a real live vLLM /metrics dump is hundreds of lines wide and
+    # mixes labeled lines (labels attached to the name, no space before '{'),
+    # float gauges, counters and +Inf histogram buckets. Detection must hold on
+    # this full realistic form and must not depend on any single metric name.
+    metrics = _fixture_text("vllm_metrics_live.txt")
+    client = _client({"/metrics": (200, metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_read_config_keeps_max_model_len_on_live_dump() -> None:
+    # The reason detection matters: on the live dump the server must resolve to
+    # the vLLM backend so max_model_len is preserved as n_ctx_total. Falling
+    # back to generic would drop it to None with provenance UNKNOWN.
+    models = _fixture_text("vllm_models.json")
+    metrics = _fixture_text("vllm_metrics_live.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.backend == Backend.VLLM
+    assert config.n_ctx_total == 8192
+    assert config.sources["n_ctx_total"] == Provenance.READ
+
+
+@pytest.mark.asyncio
 async def test_detect_zero_on_plain_text_metrics() -> None:
     # A metrics endpoint that is reachable but carries no vllm: namespace is
     # not a vLLM server, regardless of how many data lines it exposes.
