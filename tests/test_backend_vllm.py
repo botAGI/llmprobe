@@ -1,0 +1,98 @@
+"""Tests for llmprobe.backends.vllm.
+
+Hermetic: no network. Uses httpx.MockTransport serving the recorded fixtures
+in tests/fixtures/ (no real inference server).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import httpx
+import pytest
+
+from llmprobe.backends.vllm import detect, read_config
+from llmprobe.models import Backend, Provenance
+
+FIXTURES = Path(__file__).parent / "fixtures"
+BASE_URL = "http://vllm.test"
+
+
+def _fixture_text(name: str) -> str:
+    return (FIXTURES / name).read_text()
+
+
+def _client(routes: dict[str, object]) -> httpx.AsyncClient:
+    """Build a client that serves canned responses by URL path.
+
+    ``routes`` maps a path to an ``(int, str)`` ``(status_code, body)`` tuple.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        entry = routes.get(request.url.path)
+        if entry is None:
+            return httpx.Response(404, text="not found")
+        status, body = entry
+        return httpx.Response(status, text=body)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_detect_high_on_vllm_metrics() -> None:
+    metrics = _fixture_text("vllm_metrics.txt")
+    client = _client({"/metrics": (200, metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_detect_zero_on_llamacpp_metrics() -> None:
+    # llama.cpp-style metrics carry no vllm: prefix.
+    llamacpp_metrics = "\n".join(
+        [
+            'llamacpp:llm_prompt_tokens_total 17',
+            'llamacpp:llm_tokens_predicted_total 31',
+            'llamacpp:slots_idle 0',
+        ]
+    )
+    client = _client({"/metrics": (200, llamacpp_metrics)})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_detect_zero_when_metrics_missing() -> None:
+    client = _client({})
+    try:
+        score = await detect(client, BASE_URL)
+    finally:
+        await client.aclose()
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_read_config_maps_max_model_len_to_n_ctx_total() -> None:
+    models = _fixture_text("vllm_models.json")
+    metrics = _fixture_text("vllm_metrics.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.backend == Backend.VLLM
+    assert config.model_id == "meta-llama/Llama-3-8B-Instruct"
+    assert config.n_ctx_total == 8192
+    assert config.sources["n_ctx_total"] == Provenance.READ
