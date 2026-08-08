@@ -174,16 +174,17 @@ def test_api_key_is_sent_and_never_leaks_into_card(
 
 
 def test_api_key_wrong_rejects_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wrong/missing key must not silently produce an empty config."""
+    """A wrong/missing key must reject loudly, not silently pass."""
     server = make_mock_server(
         max_tokens=512, behavior="honest", required_token="right"
     )
     result = _invoke(
         server, monkeypatch, [BASE_URL, "--json"], api_key="wrong"
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 2
     report = json.loads(result.stdout)
-    assert report["config"]["model_id"] == ""
+    errors = [f for f in report["findings"] if f["severity"] == "error"]
+    assert any(f["code"] == "GENERIC_MODELS_HTTP_ERROR" for f in errors)
 
 
 def test_url_embedded_api_key_is_redacted_from_card() -> None:
