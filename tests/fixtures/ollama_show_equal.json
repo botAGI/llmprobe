@@ -1,0 +1,16 @@
+{
+  "model_info": {
+    "general.architecture": "llama",
+    "llama.context_length": 4096,
+    "llama.embedding_length": 4096
+  },
+  "parameters": "num_ctx 4096",
+  "details": {
+    "parent_model": "",
+    "format": "gguf",
+    "family": "llama",
+    "families": ["llama"],
+    "parameter_size": "8.0B",
+    "quantization_level": "Q4_0"
+  }
+}
