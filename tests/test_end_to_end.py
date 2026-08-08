@@ -35,7 +35,12 @@ runner = CliRunner()
 
 
 def _asgi_client(app: object):
-    def make(_base_url: str, timeout: float = 10.0) -> httpx.AsyncClient:
+    def make(
+        _base_url: str,
+        _api_key: str | None = None,
+        timeout: float = 10.0,
+        **_kwargs,
+    ) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
             transport=httpx.ASGITransport(app=app),

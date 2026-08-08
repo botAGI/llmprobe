@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 
 EMBED_DIM = 384
 
@@ -33,6 +33,7 @@ def make_mock_server(
     max_tokens: int,
     behavior: str,
     backend: str = "llamacpp",
+    required_token: str | None = None,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -42,14 +43,37 @@ def make_mock_server(
     * ``silent_truncation`` — always HTTP 200, but embedding derived only from
       the first ``max_tokens`` tokens (tail silently dropped).
     * ``hard_error`` — HTTP 500 when input token count exceeds ``max_tokens``.
+
+    When ``required_token`` is set, every request must carry
+    ``Authorization: Bearer <required_token>``; anything missing or wrong
+    returns 401. Detection and config-read endpoints are gated too, so an
+    unauthenticated probe cannot silently fall back to an empty config.
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
 
     app = FastAPI(title="mock-llamaserver")
 
+    def _authorized(request: Request) -> bool:
+        return request.headers.get("Authorization") == f"Bearer {required_token}"
+
+    def _guard(request: Request, response: Response) -> bool:
+        if not required_token:
+            return True
+        if not _authorized(request):
+            response.status_code = 401
+            return False
+        return True
+
     @app.get("/props")
-    def props() -> dict:
+    def props(request: Request, response: Response) -> dict:
+        if not _guard(request, response):
+            return {
+                "error": {
+                    "message": "unauthorized",
+                    "type": "authentication_error",
+                }
+            }
         # llama.cpp shape. Deliberately omits n_batch / n_ubatch.
         return {
             "total_slots": 1,
@@ -58,18 +82,31 @@ def make_mock_server(
         }
 
     @app.get("/v1/models")
-    def models() -> dict:
+    def models(request: Request, response: Response) -> dict:
+        if not _guard(request, response):
+            return {
+                "object": "list",
+                "data": [],
+            }
         return {"object": "list", "data": [{"id": "mock"}]}
 
     @app.post("/tokenize")
-    def tokenize(body: dict) -> dict:
+    def tokenize(request: Request, response: Response, body: dict) -> dict:
+        if not _guard(request, response):
+            return {"tokens": []}
         content = body.get("content", "")
         if isinstance(content, (list, tuple)):
             content = " ".join(str(x) for x in content)
         return {"tokens": _split_words(str(content))}
 
     @app.post("/v1/embeddings")
-    def embeddings(body: dict, response: Response) -> dict:
+    def embeddings(request: Request, response: Response, body: dict) -> dict:
+        if not _guard(request, response):
+            return {
+                "object": "list",
+                "data": [],
+                "usage": {"prompt_tokens": 0, "total_tokens": 0},
+            }
         raw = body.get("input", "")
         inputs: list[str]
         if isinstance(raw, str):
@@ -112,7 +149,15 @@ def make_mock_server(
         }
 
     @app.post("/v1/chat/completions")
-    def chat_completions(body: dict) -> dict:
+    def chat_completions(request: Request, response: Response, body: dict) -> dict:
+        if not _guard(request, response):
+            return {
+                "id": "cmpl-mock",
+                "object": "chat.completion",
+                "model": "mock",
+                "choices": [],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
         messages = body.get("messages", [])
         prompt = ""
         for message in reversed(messages):

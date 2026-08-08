@@ -13,6 +13,8 @@ Imports only from :mod:`llmprobe.models`, the probe modules, and
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from enum import Enum
 from typing import Annotated
 
@@ -43,6 +45,12 @@ app = typer.Typer(
 
 _console = Console()
 
+_API_KEY_ENV = "LLMPROBE_API_KEY"
+
+# A base URL may carry its secrets inline (https://user:pass@host). That userinfo
+# block is a credential and must never be echoed into output or logs.
+_USERINFO_RE = re.compile(r"(//[^/@]+@)")
+
 #: Default per-request timeout in seconds (applied to every HTTP request).
 DEFAULT_TIMEOUT = 10.0
 
@@ -53,6 +61,16 @@ class Endpoint(str, Enum):
     EMBEDDINGS = "embeddings"
     CHAT = "chat"
     AUTO = "auto"
+
+
+def redact_base_url(base_url: str) -> str:
+    """Return ``base_url`` with any inline credentials stripped.
+
+    A caller may embed an API key in the URL (``https://key@host``). That
+    secret must not reach the card or logs, so the ``userinfo`` segment is
+    removed for display while the connection URL is left untouched.
+    """
+    return _USERINFO_RE.sub("//", base_url)
 
 
 def _resolve_path(endpoint: Endpoint) -> str:
@@ -94,15 +112,25 @@ def _capacity_findings(
     ]
 
 
-def _make_client(base_url: str, timeout: float = DEFAULT_TIMEOUT) -> httpx.AsyncClient:
+def _make_client(
+    base_url: str, api_key: str | None = None, timeout: float = DEFAULT_TIMEOUT
+) -> httpx.AsyncClient:
     """Create a fresh client bound to ``base_url``.
 
     This factory is the test seam: hermetic tests replace it with a client
     wired to an ``ASGITransport`` over the mock server. The ``timeout`` is
     applied to every HTTP request the client issues, so callers thread it
-    through to bound all requests.
+    through to bound all requests. When an ``api_key`` is given it is attached
+    as a ``Bearer`` token on the ``Authorization`` header only — the key is
+    never placed in the URL, body, or report, so it cannot leak into the card
+    or logs.
     """
-    return httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(timeout))
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return httpx.AsyncClient(
+        base_url=base_url,
+        timeout=httpx.Timeout(timeout),
+        headers=headers,
+    )
 
 
 async def _assert_reachable(client: httpx.AsyncClient) -> None:
@@ -123,9 +151,10 @@ async def probe(
     do_probe: bool,
     endpoint: Endpoint,
     timeout: float = DEFAULT_TIMEOUT,
+    api_key: str | None = None,
 ) -> ProbeReport:
     """Run the configured read and optional capacity probe, then assemble a report."""
-    async with _make_client(base_url, timeout) as client:
+    async with _make_client(base_url, api_key, timeout) as client:
         await _assert_reachable(client)
         config, findings = await read_effective_config(
             client, base_url, claimed_ctx
@@ -147,8 +176,9 @@ async def probe(
             capacity.append(cap)
             findings.extend(_capacity_findings(reference, cap))
 
+        report_url = redact_base_url(base_url)
         return ProbeReport(
-            base_url=base_url,
+            base_url=report_url,
             config=config,
             capacity=capacity,
             findings=findings,
@@ -196,14 +226,29 @@ def main(
             ),
         ),
     ] = DEFAULT_TIMEOUT,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key",
+            envvar=_API_KEY_ENV,
+            help=(
+                "Bearer token sent as the Authorization header. Never echoed "
+                "into the card or logs."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
     try:
         report = asyncio.run(
-            probe(base_url, claimed_ctx, probe_flag, endpoint, timeout)
+            probe(base_url, claimed_ctx, probe_flag, endpoint, timeout, api_key)
         )
     except httpx.HTTPError as exc:
-        typer.echo(f"llmprobe: unreachable or failed server: {exc}", err=True)
+        typer.echo(
+            f"llmprobe: unreachable or failed server: "
+            f"{redact_base_url(str(exc))}",
+            err=True,
+        )
         raise typer.Exit(code=2) from exc
 
     if json_output:

@@ -28,19 +28,33 @@ BASE_URL = "http://mock"
 runner = CliRunner()
 
 
-def _asgi_client(app: object):
-    def make(_base_url: str, timeout: float = 10.0) -> httpx.AsyncClient:
+def _asgi_client(app: object, api_key: str | None = None):
+    def make(
+        _base_url: str,
+        _api_key: str | None = None,
+        timeout: float = 10.0,
+        **_kwargs,
+    ) -> httpx.AsyncClient:
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         return httpx.AsyncClient(
             base_url=BASE_URL,
             transport=httpx.ASGITransport(app=app),
             timeout=httpx.Timeout(timeout),
+            headers=headers,
         )
 
     return make
 
 
-def _invoke(app, monkeypatch: pytest.MonkeyPatch, args: list[str]):
-    monkeypatch.setattr(cli, "_make_client", _asgi_client(app))
+def _invoke(
+    app,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    api_key: str | None = None,
+):
+    monkeypatch.setattr(cli, "_make_client", _asgi_client(app, api_key))
     return runner.invoke(cli.app, args)
 
 
@@ -55,6 +69,7 @@ def test_cli_options_are_declared() -> None:
     assert "--probe" in opts
     assert "--json" in opts
     assert "--endpoint" in opts
+    assert "--api-key" in opts
     assert "--timeout" in opts
 
 
@@ -135,6 +150,52 @@ def test_unreachable_server_exits_2() -> None:
     assert result.exit_code == 2
 
 
+def test_api_key_is_sent_and_never_leaks_into_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Bearer api-key authenticates the probe and stays out of the card.
+
+    Reproduces + fixes the security question: the endpoint's api-key must not
+    arrive on stdout. The mock demands ``Bearer sup3rs3cr3t``; with the key
+    the probe succeeds, and the key string never appears in the JSON output.
+    """
+    secret = "sup3rs3cr3t"
+    server = make_mock_server(
+        max_tokens=512, behavior="honest", required_token=secret
+    )
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--probe", "--json"], api_key=secret
+    )
+    assert result.exit_code == 0, result.output
+    assert secret not in result.output
+
+    report = json.loads(result.stdout)
+    assert report["findings"] == []
+
+
+def test_api_key_wrong_rejects_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrong/missing key must not silently produce an empty config."""
+    server = make_mock_server(
+        max_tokens=512, behavior="honest", required_token="right"
+    )
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--json"], api_key="wrong"
+    )
+    assert result.exit_code == 0
+    report = json.loads(result.stdout)
+    assert report["config"]["model_id"] == ""
+
+
+def test_url_embedded_api_key_is_redacted_from_card() -> None:
+    """A key in the base URL must not leak into the card header."""
+    server = make_mock_server(max_tokens=512, behavior="honest")
+    url = "http://sup3rs3cr3t@mock"
+    result = _invoke(server, monkeypatch := pytest.MonkeyPatch(), [url])
+    assert result.exit_code == 0
+    assert "sup3rs3cr3t" not in result.output
+    assert "# Capability Report — http://mock" in result.output
+
+
 def test_timeout_is_threaded_into_every_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -142,7 +203,10 @@ def test_timeout_is_threaded_into_every_client(
     captured: dict[str, float] = {}
 
     def capturing_client(
-        _base_url: str, timeout: float = cli.DEFAULT_TIMEOUT
+        _base_url: str,
+        _api_key: str | None = None,
+        timeout: float = cli.DEFAULT_TIMEOUT,
+        **_kwargs,
     ) -> httpx.AsyncClient:
         captured["timeout"] = timeout
         return httpx.AsyncClient(

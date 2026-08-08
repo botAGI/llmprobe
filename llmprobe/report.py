@@ -9,6 +9,8 @@ without a marker is a bug.
 
 from __future__ import annotations
 
+import re
+
 from llmprobe.models import (
     CliffBehavior,
     ProbeReport,
@@ -19,6 +21,15 @@ _HEADER_ROW = "| Property | Claimed | Measured | Source | Verdict |"
 _SEPARATOR_ROW = "| --- | --- | --- | --- | --- |"
 
 _CEILING_CODE_SUBSTRINGS = ("BATCH", "UBATCH", "CEILING")
+
+# A base URL may carry a credential inline (https://user:pass@host). The card
+# header echoes the URL, so the userinfo block must be stripped for display.
+_USERINFO_RE = re.compile(r"(//[^/@]+@)")
+
+
+def _display_url(base_url: str) -> str:
+    """Return ``base_url`` stripped of any inline userinfo credentials."""
+    return _USERINFO_RE.sub("//", base_url)
 
 
 def _is_ceiling_finding(code: str) -> bool:
@@ -131,7 +142,7 @@ def _fix_lines(report: ProbeReport) -> list[str]:
 def to_markdown(report: ProbeReport) -> str:
     """Render the report as a tight, honest markdown capability card."""
     rows: list[str] = [
-        f"# Capability Report — {report.base_url}",
+        f"# Capability Report — {_display_url(report.base_url)}",
         "",
         _HEADER_ROW,
         _SEPARATOR_ROW,
