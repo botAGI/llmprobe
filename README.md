@@ -106,6 +106,80 @@ every value) over eyeballing the markdown card.
 
 llama.cpp (`llama-server`), vLLM, Ollama, and a generic OpenAI-compatible fallback.
 
+## Примеры вывода
+
+Ниже приведены примеры реального вывода инструмента. Всякий отчёт состоит из
+таблицы `Capability Report`, где для каждого свойства указаны заявленное
+(Claimed) и измеренное (Measured) значения, источник значения (Source) и вердикт
+(Verdict).
+
+Пример отчёта для сервера с корректной конфигурацией (`tests/golden/clean.md`):
+
+```text
+# Capability Report — http://localhost:8080
+
+| Property | Claimed | Measured | Source | Verdict |
+| --- | --- | --- | --- | --- |
+| backend | llamacpp | llamacpp | read | ok |
+| model | mock/llama-3.1-8b | mock/llama-3.1-8b | read | ok |
+| context (total) | 8192 | 8192 | read | ok |
+| context (per slot) | 2048 | 2048 | read | ok |
+| slots | 4 | 4 | read | ok |
+| max input tokens (/completion) | unknown | 8192 | measured | ok |
+| cliff behaviour (/completion) | unknown | accepted | measured | ok |
+```
+
+Пример отчёта, выявляющего проблему, — измеренный потолок ниже заявленного, а
+лишние токены молча отбрасываются (`tests/golden/silent-truncation.md`):
+
+```text
+# Capability Report — http://localhost:8080
+
+| Property | Claimed | Measured | Source | Verdict |
+| --- | --- | --- | --- | --- |
+| backend | llamacpp | llamacpp | read | ok |
+| model | mock/llama-3.1-8b | mock/llama-3.1-8b | read | ok |
+| context (total) | 8192 | 8192 | read | ok |
+| context (per slot) | 2048 | 2048 | read | ok |
+| slots | 4 | 4 | read | ok |
+| max input tokens (/completion) | unknown | 7168 | measured | ok |
+| cliff behaviour (/completion) | unknown | silent_truncation | measured | truncated |
+
+## Findings
+
+- **[mismatch] UBATCH_CEILING**: advertised=8192 vs measured=7168 — requests past 7168 tokens are silently truncated
+
+## Fix
+
+--batch-size 8192 --ubatch-size 8192
+```
+
+Во втором примере важно различие между вердиктами `ok` и `truncated`: именно
+`truncated` означает, что сервер принял запрос, но отбросил хвост контекста, не
+сообщив об ошибке.
+
+## Ограничения инструмента
+
+Инструмент измеряет только ёмкость и конфигурацию сервера. Он **не** делает и
+**не** может делать следующего:
+
+- **Не поддерживает потоковую генерацию ответов.** Измеряется поведение
+  endpoints, а не streaming-протоколы (`text/event-stream`); скорость генерации
+  `tokens/s` и задержки первого токена не измеряются.
+- **Не измеряет качество ответов.** Инструмент не оценивает корректность,
+  осмысленность или полезность сгенерированного текста — только то, принял ли
+  сервер запрос и в каком объёме контекст реально обработан.
+- **Только метрики capacity/slots.** Отчёт ограничен такими свойствами, как
+  размер контекста, число слотов и максимальное число входных токенов. Прочие
+  характеристики (пропускная способность, стабильность при нагрузке, поведение
+  разных моделей) остаются за рамками.
+- **Вердикты `ok`/`truncated`/`mismatch` относятся к ёмкости, а не к
+  «правильности» модели.** Чистая конфигурация (`ok`) не гарантирует разумных
+  ответов — это лишь отсутствие молчаливой потери контекста.
+
+Не следует трактовать «всё `ok`» как «сервер работает качественно». Это означает
+только: заявленная ёмкость подтверждена измерением.
+
 ## Status
 
 Early. v0 covers config read, capacity cliff, and per-slot context.
