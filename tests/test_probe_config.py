@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llmprobe.models import Backend, Provenance
+from llmprobe.models import Backend, Provenance, Severity
 from llmprobe.probes.config import read_effective_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -126,4 +126,9 @@ async def test_matching_nothing_falls_back_to_generic_without_raising() -> None:
 
     assert config.backend == Backend.GENERIC
     assert config.sources["n_ctx_total"] == Provenance.UNKNOWN
-    assert findings == []
+    # Falling back to generic still surfaces the read failure as an ERROR
+    # finding rather than raising unhandled or silently swallowing it.
+    assert len(findings) == 1
+    assert findings[0].severity == Severity.ERROR
+    assert findings[0].code == "GENERIC_MODELS_HTTP_ERROR"
+    assert findings[0].advertised == 404

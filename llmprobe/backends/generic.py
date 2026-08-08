@@ -18,9 +18,13 @@ from __future__ import annotations
 
 import httpx
 
-from llmprobe.models import Backend, EffectiveConfig, Provenance
+from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance, Severity
 
 GENERIC_DETECT_CONFIDENCE = 0.1
+
+#: Finding codes emitted when the sole generic endpoint cannot be read.
+MODELS_UNREACHABLE_CODE = "GENERIC_MODELS_UNREACHABLE"
+MODELS_HTTP_ERROR_CODE = "GENERIC_MODELS_HTTP_ERROR"
 
 
 async def detect(client: httpx.AsyncClient, base_url: str) -> float:
@@ -34,22 +38,58 @@ async def detect(client: httpx.AsyncClient, base_url: str) -> float:
 
 async def read_config(
     client: httpx.AsyncClient, base_url: str
-) -> EffectiveConfig:
+) -> tuple[EffectiveConfig, list[Finding]]:
     """Read the only value a generic server is willing to admit.
 
     ``GET /v1/models`` yields the advertised model id (provenance ``read``
     when present, otherwise ``unknown``). Every capacity field stays ``None``
     with provenance ``UNKNOWN`` because a generic OpenAI-compatible server
     gives us no reliable measurement of them.
+
+    Returned alongside the config is a list of findings. A non-200 response
+    or a transport failure while reading ``/v1/models`` is surfaced as an
+    ERROR finding rather than swallowed silently or allowed to raise, so the
+    caller can report exactly why the probe failed.
     """
     base = base_url.rstrip("/")
     model_id = ""
+    findings: list[Finding] = []
     try:
         resp = await client.get(f"{base}/v1/models")
-        resp.raise_for_status()
-        payload = resp.json()
-    except (httpx.HTTPError, ValueError):
+    except httpx.HTTPError as exc:
+        findings.append(
+            Finding(
+                severity=Severity.ERROR,
+                code=MODELS_UNREACHABLE_CODE,
+                message=f"failed to reach {base}/v1/models: {exc}",
+            )
+        )
         payload = {}
+    else:
+        if resp.status_code != 200:
+            findings.append(
+                Finding(
+                    severity=Severity.ERROR,
+                    code=MODELS_HTTP_ERROR_CODE,
+                    advertised=resp.status_code,
+                    message=(
+                        f"{base}/v1/models returned HTTP {resp.status_code}"
+                    ),
+                )
+            )
+            payload = {}
+        else:
+            try:
+                payload = resp.json()
+            except ValueError:
+                findings.append(
+                    Finding(
+                        severity=Severity.ERROR,
+                        code=MODELS_HTTP_ERROR_CODE,
+                        message=f"{base}/v1/models returned invalid JSON",
+                    )
+                )
+                payload = {}
 
     data = payload.get("data") if isinstance(payload, dict) else None
     entry = data[0] if isinstance(data, list) and data else {}
@@ -64,7 +104,7 @@ async def read_config(
         "total_slots": Provenance.UNKNOWN,
     }
 
-    return EffectiveConfig(
+    config = EffectiveConfig(
         backend=Backend.GENERIC,
         model_id=model_id,
         n_ctx_total=None,
@@ -74,3 +114,4 @@ async def read_config(
         total_slots=None,
         sources=sources,
     )
+    return config, findings
