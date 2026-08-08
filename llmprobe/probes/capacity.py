@@ -1,0 +1,200 @@
+"""Capacity cliff detection via binary search over input length.
+
+The core product: given an inference endpoint, find the largest input length
+the server genuinely accepts, and report *how* it fails beyond that point.
+
+We never trust an HTTP 200 by itself. For ``/v1/embeddings`` we send TWO
+prompts of the same length ``n`` that differ only in their FINAL token and
+compare the returned vectors. A server that silently drops the tail returns
+identical vectors (cosine similarity effectively 1.0) regardless of the
+differing tail — we call that ``SILENT_TRUNCATION``. Only when the two
+responses genuinely differ do we accept the length. A 4xx/5xx is
+``HARD_ERROR``. For ``/v1/chat/completions`` we plant a unique canary at the
+start and ask the model to repeat the first word; an absent canary reveals
+head truncation.
+
+Imports only from :mod:`llmprobe.models`.
+"""
+
+from __future__ import annotations
+
+import math
+
+import httpx
+
+from llmprobe.models import Backend, CapacityResult, CliffBehavior
+
+LO = 16
+DEFAULT_CEILING = 32768
+COSINE_SIMILARITY_THRESHOLD = 0.9999
+
+_FILLER = "tok"
+_FINAL_A = "llmprobeFinalA"
+_FINAL_B = "llmprobeFinalB"
+_CANARY = "llmprobeCanary"
+
+
+def _n_token_prompt(n: int, final: str) -> str:
+    """Build a prompt of ``n`` presumed single-token words ending in ``final``.
+
+    Each whitespace-delimited word is treated as one token, mirroring the
+    ``/tokenize`` contract the tokenizer verifies for the supported backends.
+    """
+    if n <= 1:
+        return final
+    return " ".join([_FILLER] * (n - 1) + [final])
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+async def _post_embed(
+    client: httpx.AsyncClient, base_url: str, prompt: str
+) -> list[float] | None:
+    """POST one embedding; return the vector on 200 else ``None``."""
+    base = base_url.rstrip("/")
+    try:
+        resp = await client.post(
+            f"{base}/v1/embeddings", json={"input": prompt, "model": "embed-mock"}
+        )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    try:
+        return list(payload["data"][0]["embedding"])
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+async def _embed_classify(
+    client: httpx.AsyncClient, base_url: str, n: int, requests: list[int]
+) -> str:
+    """Classify length ``n`` against ``/v1/embeddings``.
+
+    Two identical-length prompts differing only in the final token. A 4xx/5xx
+    is ``hard_error``; effectively identical vectors are ``silent_truncation``;
+    genuinely different vectors are ``accepted``.
+    """
+    a = _n_token_prompt(n, _FINAL_A)
+    b = _n_token_prompt(n, _FINAL_B)
+    requests[0] += 1
+    va = await _post_embed(client, base_url, a)
+    requests[0] += 1
+    vb = await _post_embed(client, base_url, b)
+    if va is None or vb is None:
+        return "hard_error"
+    if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
+        return "silent_truncation"
+    return "accepted"
+
+
+async def _chat_classify(
+    client: httpx.AsyncClient, base_url: str, n: int, requests: list[int]
+) -> str:
+    """Classify length ``n`` against ``/v1/chat/completions`` via a head canary.
+
+    A unique canary is planted at the very start of the prompt and the model is
+    asked to repeat the first word. If the canary is absent from the reply the
+    head was truncated (``silent_truncation``). A 4xx/5xx is ``hard_error``.
+    """
+    base = base_url.rstrip("/")
+    body = f"{_CANARY} " + _n_token_prompt(max(n - 1, 0), _FINAL_A)
+    requests[0] += 1
+    try:
+        resp = await client.post(
+            f"{base}/v1/chat/completions",
+            json={
+                "model": "mock",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Repeat the first word of this prompt exactly: "
+                            f"{body}"
+                        ),
+                    }
+                ],
+            },
+        )
+    except httpx.HTTPError:
+        return "hard_error"
+    if resp.status_code != 200:
+        return "hard_error"
+    try:
+        content = resp.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return "hard_error"
+    if _CANARY not in str(content):
+        return "silent_truncation"
+    return "accepted"
+
+
+_OUTCOME_TO_CLIFF = {
+    "hard_error": CliffBehavior.HARD_ERROR,
+    "silent_truncation": CliffBehavior.SILENT_TRUNCATION,
+    "accepted": CliffBehavior.ACCEPTED,
+}
+
+
+async def probe_capacity(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    ceiling: int = DEFAULT_CEILING,
+    backend: Backend = Backend.GENERIC,
+) -> CapacityResult:
+    """Determine the largest accepted input length and how the server fails.
+
+    Binary-search over input length ``n`` in ``[LO, ceiling]``. Returns a
+    :class:`~llmprobe.models.CapacityResult` with the largest ``n`` classified
+    ``ACCEPTED`` as ``max_accepted_tokens`` and the outcome of the first
+    non-accepted length as ``cliff_behavior``. When every probed length is
+    accepted (including ``ceiling``), ``cliff_behavior`` is ``ACCEPTED``.
+
+    ``backend`` is accepted for API symmetry; the request shapes we send are
+    stable across the supported backends.
+    """
+    requests = [0]
+
+    async def classify(n: int) -> str:
+        if endpoint.rstrip("/").endswith("/chat/completions"):
+            return await _chat_classify(client, base_url, n, requests)
+        return await _embed_classify(client, base_url, n, requests)
+
+    # If the ceiling itself is accepted there is no cliff within range.
+    if await classify(ceiling) == "accepted":
+        return CapacityResult(
+            endpoint=endpoint,
+            max_accepted_tokens=ceiling,
+            cliff_behavior=CliffBehavior.ACCEPTED,
+            probe_requests_used=requests[0],
+        )
+
+    lo, hi = LO, ceiling
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        outcome = await classify(mid)
+        if outcome == "accepted":
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    max_accepted = hi
+    cliff_outcome = await classify(max_accepted + 1)
+    return CapacityResult(
+        endpoint=endpoint,
+        max_accepted_tokens=max_accepted,
+        cliff_behavior=_OUTCOME_TO_CLIFF[cliff_outcome],
+        probe_requests_used=requests[0],
+    )
