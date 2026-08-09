@@ -23,6 +23,7 @@ import math
 import httpx
 
 from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
+from llmprobe.tokens import _tokenize
 
 LO = 16
 DEFAULT_CEILING = 32768
@@ -45,6 +46,20 @@ def _n_token_prompt(n: int, final: str) -> str:
     if n <= 1:
         return final
     return " ".join([_FILLER] * (n - 1) + [final])
+
+
+async def _exact_tokenization_available(client: httpx.AsyncClient, base_url: str) -> bool:
+    """Return ``True`` when we can trust ``_n_token_prompt`` counts as exact.
+
+    The prompts built by :func:`_n_token_prompt` are exactly ``n`` tokens only
+    if every marker word it can contain is itself a single token. We verify all
+    four markers against the live ``/tokenize`` endpoint in one request; any
+    word that tokenizes to more (or fewer) than one token makes the count a
+    nominal estimate, for which we must report ``exact=False``.
+    """
+    probe = " ".join([_FILLER, _FINAL_A, _FINAL_B, _CANARY])
+    count = await _tokenize(client, base_url.rstrip("/"), probe)
+    return count == 4
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -174,6 +189,11 @@ async def probe_capacity(
     """
     requests = [0]
 
+    # Can we verify our prompt lengths against the server's tokenizer? If not,
+    # every reported count is a nominal estimate and token_count_exact must be
+    # False — we never claim a verified count we could not obtain.
+    exact = await _exact_tokenization_available(client, base_url)
+
     async def classify(n: int) -> str:
         if endpoint.rstrip("/").endswith("/chat/completions"):
             return await _chat_classify(client, base_url, n, requests)
@@ -184,6 +204,7 @@ async def probe_capacity(
         return CapacityResult(
             endpoint=endpoint,
             max_accepted_tokens=ceiling,
+            token_count_exact=exact,
             cliff_behavior=CliffBehavior.ACCEPTED,
             probe_requests_used=requests[0],
         )
@@ -207,6 +228,7 @@ async def probe_capacity(
             if max_accepted < LO
             else Provenance.MEASURED
         ),
+        token_count_exact=exact,
         cliff_behavior=_OUTCOME_TO_CLIFF[cliff_outcome],
         probe_requests_used=requests[0],
     )

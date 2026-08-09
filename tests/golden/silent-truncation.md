@@ -8,6 +8,7 @@
 | context (per slot) | 2048 | 2048 | read | ok |
 | slots | 4 | 4 | read | ok |
 | max input tokens (/completion) | unknown | 7168 | measured | ok |
+| token count (/completion) | unknown | exact | measured | ok |
 | cliff behaviour (/completion) | unknown | silent_truncation | measured | truncated |
 
 ## Findings

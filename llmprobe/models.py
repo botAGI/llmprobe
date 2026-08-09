@@ -71,11 +71,18 @@ class CapacityResult(BaseModel):
     that rejects every probed length (real capacity below :data:`LO`) cannot
     report an accepted length; the caller must be able to see that the integer
     is a lower-bound estimate rather than a measured observation.
+
+    ``token_count_exact`` records whether the probed lengths were verified to
+    be exactly ``max_accepted_tokens`` tokens via a live ``/tokenize`` endpoint.
+    When tokenization is unavailable the prompts are nominal estimates and this
+    flag is ``False`` — an honest "we could not verify the count" signal rather
+    than a confident guess.
     """
 
     endpoint: str
     max_accepted_tokens: int
     max_accepted_source: Provenance = Provenance.MEASURED
+    token_count_exact: bool = True
     cliff_behavior: CliffBehavior
     probe_requests_used: int
 

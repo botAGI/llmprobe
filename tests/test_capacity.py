@@ -120,3 +120,32 @@ async def test_below_lo_capacity_is_reported_as_unmeasured() -> None:
         )
     assert result.max_accepted_source == Provenance.UNKNOWN
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+
+
+@pytest.mark.asyncio
+async def test_token_count_exact_when_tokenizer_available() -> None:
+    """When the server exposes a working ``/tokenize`` endpoint the probed
+    lengths are verifiable, so ``token_count_exact`` must be ``True``.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.token_count_exact is True
+
+
+@pytest.mark.asyncio
+async def test_token_count_is_estimate_when_tokenizer_unavailable() -> None:
+    """When ``/tokenize`` is unavailable (the exact-count fallback cannot run)
+    the lengths are nominal estimates and ``token_count_exact`` must be
+    ``False`` — never a confident guess about a count we could not verify.
+    """
+    server = make_mock_server(
+        max_tokens=512, behavior="hard_error", tokenize_enabled=False
+    )
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.token_count_exact is False

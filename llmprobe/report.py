@@ -119,6 +119,11 @@ def _capacity_rows(report: ProbeReport) -> list[str]:
             f"| max input tokens ({endpoint}) | unknown | "
             f"{_fmt(cap.max_accepted_tokens)} | {cap.max_accepted_source.value} | ok |"
         )
+        token_exact = "exact" if cap.token_count_exact else "estimate"
+        rows.append(
+            f"| token count ({endpoint}) | unknown | {token_exact} | "
+            f"{Provenance.MEASURED.value} | ok |"
+        )
         rows.append(
             f"| cliff behaviour ({endpoint}) | unknown | "
             f"{cap.cliff_behavior.value} | {Provenance.MEASURED.value} | {ceil} |"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 
 EMBED_DIM = 384
 
@@ -34,6 +34,7 @@ def make_mock_server(
     behavior: str,
     backend: str = "llamacpp",
     required_token: str | None = None,
+    tokenize_enabled: bool = True,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -48,6 +49,10 @@ def make_mock_server(
     ``Authorization: Bearer <required_token>``; anything missing or wrong
     returns 401. Detection and config-read endpoints are gated too, so an
     unauthenticated probe cannot silently fall back to an empty config.
+
+    When ``tokenize_enabled`` is ``False``, the ``/tokenize`` endpoint returns
+    404 so a probe cannot verify exact token counts and must report the count as
+    an estimate (``token_count_exact=False``).
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
@@ -92,6 +97,8 @@ def make_mock_server(
 
     @app.post("/tokenize")
     def tokenize(request: Request, response: Response, body: dict) -> dict:
+        if not tokenize_enabled:
+            raise HTTPException(status_code=404, detail="Not Found")
         if not _guard(request, response):
             return {"tokens": []}
         content = body.get("content", "")
