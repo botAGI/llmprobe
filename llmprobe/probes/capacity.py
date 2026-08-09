@@ -22,7 +22,7 @@ import math
 
 import httpx
 
-from llmprobe.models import Backend, CapacityResult, CliffBehavior
+from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
 
 LO = 16
 DEFAULT_CEILING = 32768
@@ -37,8 +37,10 @@ _CANARY = "llmprobeCanary"
 def _n_token_prompt(n: int, final: str) -> str:
     """Build a prompt of ``n`` presumed single-token words ending in ``final``.
 
-    Each whitespace-delimited word is treated as one token, mirroring the
-    ``/tokenize`` contract the tokenizer verifies for the supported backends.
+    Each whitespace-delimited word is treated as one token. No tokenizer is
+    invoked — the count is a nominal estimate, acceptable here because the
+    binary-search *classification* depends on the server's own responses, not
+    on the prompt's exact token count.
     """
     if n <= 1:
         return final
@@ -162,6 +164,11 @@ async def probe_capacity(
     non-accepted length as ``cliff_behavior``. When every probed length is
     accepted (including ``ceiling``), ``cliff_behavior`` is ``ACCEPTED``.
 
+    When every probed length in ``[LO, ceiling]`` is rejected, no length was
+    measured as accepted; ``max_accepted_tokens`` carries a lower-bound value
+    that was never probed and ``max_accepted_source`` is set to ``UNKNOWN`` so
+    the report does not claim a measurement it does not have.
+
     ``backend`` is accepted for API symmetry; the request shapes we send are
     stable across the supported backends.
     """
@@ -195,6 +202,11 @@ async def probe_capacity(
     return CapacityResult(
         endpoint=endpoint,
         max_accepted_tokens=max_accepted,
+        max_accepted_source=(
+            Provenance.UNKNOWN
+            if max_accepted < LO
+            else Provenance.MEASURED
+        ),
         cliff_behavior=_OUTCOME_TO_CLIFF[cliff_outcome],
         probe_requests_used=requests[0],
     )

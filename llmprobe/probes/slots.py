@@ -36,12 +36,23 @@ def check_slots(
 
     derived_per_slot = config.n_ctx_total // config.total_slots
 
-    mismatched = derived_per_slot != config.n_ctx_per_slot
-    if claimed_ctx is not None and derived_per_slot != claimed_ctx:
-        mismatched = True
+    reported = config.n_ctx_per_slot
+    reported_mismatch = derived_per_slot != reported
+    claimed_mismatch = claimed_ctx is not None and derived_per_slot != claimed_ctx
+    mismatched = reported_mismatch or claimed_mismatch
     if not mismatched:
         return []
 
+    reported_part = (
+        f", reported per-slot context ({reported})"
+        if reported_mismatch and reported is not None
+        else ""
+    )
+    claimed_part = (
+        f", claimed context ({claimed_ctx})"
+        if claimed_mismatch and claimed_ctx is not None
+        else ""
+    )
     return [
         Finding(
             severity=Severity.MISMATCH,
@@ -50,7 +61,7 @@ def check_slots(
             measured=derived_per_slot,
             message=(
                 f"derived per-slot context ({derived_per_slot}) disagrees with "
-                f"reported per-slot context ({config.n_ctx_per_slot})"
+                f"the total-slot arithmetic{reported_part}{claimed_part}"
             ),
         )
     ]

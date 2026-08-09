@@ -117,7 +117,7 @@ def _capacity_rows(report: ProbeReport) -> list[str]:
         endpoint = _esc(cap.endpoint)
         rows.append(
             f"| max input tokens ({endpoint}) | unknown | "
-            f"{_fmt(cap.max_accepted_tokens)} | {Provenance.MEASURED.value} | ok |"
+            f"{_fmt(cap.max_accepted_tokens)} | {cap.max_accepted_source.value} | ok |"
         )
         rows.append(
             f"| cliff behaviour ({endpoint}) | unknown | "

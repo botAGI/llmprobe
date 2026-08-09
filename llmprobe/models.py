@@ -65,10 +65,17 @@ class CliffBehavior(str, Enum):
 
 
 class CapacityResult(BaseModel):
-    """Outcome of probing a single endpoint's real capacity."""
+    """Outcome of probing a single endpoint's real capacity.
+
+    ``max_accepted_tokens`` carries its own provenance because a binary search
+    that rejects every probed length (real capacity below :data:`LO`) cannot
+    report an accepted length; the caller must be able to see that the integer
+    is a lower-bound estimate rather than a measured observation.
+    """
 
     endpoint: str
     max_accepted_tokens: int
+    max_accepted_source: Provenance = Provenance.MEASURED
     cliff_behavior: CliffBehavior
     probe_requests_used: int
 

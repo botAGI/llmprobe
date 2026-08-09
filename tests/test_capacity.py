@@ -9,7 +9,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llmprobe.models import Backend, CliffBehavior
+from llmprobe.models import Backend, CliffBehavior, Provenance
 from llmprobe.probes.capacity import probe_capacity
 
 from tests.mocks.server import make_mock_server
@@ -101,3 +101,22 @@ async def test_status_only_classifier_is_insufficient() -> None:
     assert trunc_result[1] == "accepted"
     assert honest_result[1] == "accepted"
     assert trunc_result[0] > 512  # both "accept" beyond the real cliff
+
+
+@pytest.mark.asyncio
+async def test_below_lo_capacity_is_reported_as_unmeasured() -> None:
+    """A server that rejects every probed length (capacity below LO) must not
+    report a never-probed integer as ``measured``.
+
+    The binary search only probes lengths ``>= LO``; when every probe is
+    rejected the ``max_accepted_tokens`` value falls below LO and was never
+    actually probed. Its provenance MUST be ``unknown`` so the report does not
+    claim a measurement it does not have.
+    """
+    server = make_mock_server(max_tokens=10, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_source == Provenance.UNKNOWN
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR

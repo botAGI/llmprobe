@@ -16,6 +16,8 @@ python3 -m pytest -q
 ```
 
 Baseline: 84 passed. After the one fix below: 84 passed (no regressions).
+Findings 2-4 were subsequently resolved (see each finding's fix note); the
+full suite currently passes.
 
 ---
 
@@ -24,9 +26,9 @@ Baseline: 84 passed. After the one fix below: 84 passed (no regressions).
 | # | Severity | Finding | Status |
 |---|----------|---------|--------|
 | 1 | High | Unhandled `JSONDecodeError` in vLLM adapter on malformed `/v1/models` | Fixed |
-| 2 | Medium | Capacity cliff fabricates a never-probed "measured" max when even the minimum probe length is rejected | Documented |
-| 3 | Medium | `llmprobe/tokens.py` is dead code — never used by the production capacity path | Documented |
-| 4 | Low | Slot mismatch context check message omits the claimed value that triggered it | Documented |
+| 2 | Medium | Capacity cliff fabricates a never-probed "measured" max when even the minimum probe length is rejected | Fixed |
+| 3 | Medium | `llmprobe/tokens.py` is dead code — never used by the production capacity path | Fixed |
+| 4 | Low | Slot mismatch context check message omits the claimed value that triggered it | Fixed |
 
 ---
 
@@ -136,17 +138,15 @@ server that rejects every length if a hard cliff exists below 16) and
 max_accepted_tokens = 15   LO = 16   # 15 was never sent to the server
 ```
 
-### Suggested fix (not applied — semantics require a model decision)
+### Fix (applied)
 
-`CapacityResult.max_accepted_tokens` is a plain `int` with no provenance field,
-so an exact "unmeasured" value cannot be marked honestly without extending the
-model. Two options, left to maintainers:
-
-1. When `max_accepted < LO`, report `max_accepted_tokens = LO` (a length that
-   was actually probed) alongside the cliff behavior — this keeps the value a
-   real observation and never claims an unprobed length.
-2. Extend `CapacityResult` with a provenance/`accepted` flag so the report can
-   say "below 16 (not measured)" instead of a confident integer.
+`CapacityResult` now carries `max_accepted_source: Provenance`. When the binary
+search rejects every probed length (`max_accepted < LO`), `probe_capacity` sets
+`max_accepted_source = UNKNOWN` and `report._capacity_rows` renders the value
+with that provenance instead of a fabricated `measured`. The report therefore
+never claims a measurement for a length that was never probed. A regression
+test (`test_below_lo_capacity_is_reported_as_unmeasured`) drives a mock server
+whose real capacity is below `LO` and asserts provenance `UNKNOWN`.
 
 ---
 
@@ -174,12 +174,15 @@ module advertises is never exercised by the real capacity probe.
 `grep -rn "make_prompt_of_exactly" llmprobe/` returns only the definition in
 `tokens.py`; the only callers are its tests.
 
-### Suggested fix (not applied)
+### Fix (applied)
 
-Either wire `make_prompt_of_exactly` into `probe_capacity`, or remove the
-unused module. Since installing it into the binary search changes probe request
-budgets and golden outputs, this is left as a deliberate, separate change
-rather than folded into this review.
+The unused module `llmprobe/tokens.py` and its test `tests/test_tokens.py` were
+removed, eliminating the dead code. `capacity.py`'s docstrings no longer claim
+prompts "mirror the `/tokenize` contract" — they now state plainly that no
+tokenizer is invoked and that the classification depends on the server's own
+responses, not on an exact token count. The nominal per-word estimate is honest
+here because the binary search measures the cliff from server responses, not
+from any assumed tokenization.
 
 ---
 
@@ -214,10 +217,14 @@ per-slot value that matches `config.n_ctx_per_slot` but differs from a supplied
 cites only the reported per-slot context, not the (equal) reported value that
 would appear consistent from the message text alone.
 
-### Suggested fix (not applied)
+### Fix (applied)
 
-Include `claimed_ctx` in the message when it is the disambiguating trigger, or
-state both compared values clearly. Minor and left as a hardening suggestion.
+`check_slots` now reports which value (or values) actually disagreed with the
+derived per-slot context. The `reported per-slot context` clause is included
+only when the reported value genuinely differs from the derived value; when the
+mismatch comes solely from `claimed_ctx`, the message names the claimed value
+instead. The prose can no longer cite a comparison that did not trigger the
+finding.
 
 ---
 

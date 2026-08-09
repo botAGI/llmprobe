@@ -48,7 +48,7 @@ def test_claimed_ctx_mismatch_emits_finding() -> None:
             measured=2048,
             message=(
                 "derived per-slot context (2048) disagrees with "
-                "reported per-slot context (2048)"
+                "the total-slot arithmetic, claimed context (8192)"
             ),
         )
     ]
