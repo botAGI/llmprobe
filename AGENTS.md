@@ -21,7 +21,8 @@ If the test does not pass, the task is not done. Do not claim otherwise.
 
 ## Honesty rules (this is the whole point of the product)
 - Every reported value carries a provenance marker: `read` (server told us),
-  `measured` (we probed it), `inferred` (derived), `unknown` (we could not tell).
+  `measured` (we probed it), `inferred` (derived), `estimated` (approximated
+  because no exact source was available), `unknown` (we could not tell).
 - NEVER fabricate a value to make output look complete. `unknown` is a valid answer
   and is more useful than a confident guess.
 - Do not soften or delete a test that fails — fix the code.

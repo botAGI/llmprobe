@@ -59,6 +59,31 @@ hanging the process.
   A confident guess is worse than an honest "unknown", and no value is
   fabricated to make a report look complete.
 
+## How llmprobe counts tokens
+
+The token counts that drive the capacity probe are never invented. llmprobe
+uses a server-side source of truth when one is available and clearly labels an
+approximation when it is not:
+
+- **Exact count via `/tokenize` (llama.cpp).** llama.cpp serves
+  `POST /tokenize`, which returns the token sequence for a given string.
+  llmprobe builds a probe prompt, re-tokenizes it against the live server, and
+  adjusts it until the server reports exactly the length we asked for. The
+  count is whatever the server's own tokenizer says — not a guess.
+- **Exact count via `usage.prompt_tokens` (vLLM).** vLLM reports
+  `usage.prompt_tokens` on its chat and embeddings responses; llmprobe reads
+  the number the server itself reported.
+- **Estimate when neither source is available.** If `/tokenize` is absent or
+  unreadable and the response carries no usable `usage.prompt_tokens`, llmprobe
+  repeats a calibrated single-token filler and treats the length as an
+  approximation. The result is marked `estimated` so nobody mistakes a guess
+  for a measured value.
+
+The distinction exists for the same reason provenance exists everywhere in
+this tool: a length confirmed by the server's own tokenizer is a fact, a
+length built from guesswork filler is a model, and a report must always let
+you tell the two apart.
+
 ## Known limitations
 
 Be clear-eyed about what a run can and cannot tell you:
