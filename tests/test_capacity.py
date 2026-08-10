@@ -18,6 +18,8 @@ BASE_URL = "http://mock"
 
 EMBEDDINGS = "/v1/embeddings"
 
+CHAT = "/v1/chat/completions"
+
 
 def _client(app) -> httpx.AsyncClient:
     transport = httpx.ASGITransport(app=app)
@@ -170,3 +172,46 @@ async def test_vllm_prompt_tokens_yields_exact_count() -> None:
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
     assert result.token_count_exact is True
+
+
+@pytest.mark.asyncio
+async def test_chat_hard_error_server_cliff() -> None:
+    """A chat hard_error server: max accepted is exactly max_tokens; cliff is HARD_ERROR."""
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, CHAT, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+    assert result.max_accepted_source == Provenance.MEASURED
+
+
+@pytest.mark.asyncio
+async def test_chat_silent_truncation_server_cliff() -> None:
+    """A chat silent_truncation server MUST be detected via the head canary.
+
+    The chat endpoint always returns HTTP 200; only the canary check can reveal
+    that the head was silently dropped beyond the limit. If this case is not
+    caught the chat capacity probe does not work.
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, CHAT, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_source == Provenance.MEASURED
+
+
+@pytest.mark.asyncio
+async def test_chat_honest_server_accepts_ceiling() -> None:
+    """A chat honest server never errors nor truncates: ceiling is accepted."""
+    server = make_mock_server(max_tokens=8192, behavior="honest")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, CHAT, ceiling=8192, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_tokens == 8192
+    assert result.cliff_behavior == CliffBehavior.ACCEPTED

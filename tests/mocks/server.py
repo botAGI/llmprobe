@@ -173,9 +173,23 @@ def make_mock_server(
                 prompt = content
                 break
         tokens = _split_words(prompt)
-        if behavior == "silent_truncation":
-            tokens = tokens[:max_tokens]
-        reply = tokens[0] if tokens else ""
+        # For chat the canary is the FIRST token of the message content; a real
+        # model echoes it. An oversized prompt is a hard error, and a silently
+        # truncated prompt has its head (the canary) dropped only when it is
+        # too long, so the reply can no longer contain it.
+        if behavior == "hard_error" and len(tokens) > max_tokens:
+            response.status_code = 500
+            return {
+                "error": {
+                    "message": "prompt too long",
+                    "type": "invalid_request_error",
+                    "code": 500,
+                }
+            }
+        if behavior == "silent_truncation" and len(tokens) > max_tokens:
+            reply = tokens[1] if len(tokens) > 1 else ""
+        else:
+            reply = tokens[0] if tokens else ""
         return {
             "id": "cmpl-mock",
             "object": "chat.completion",
