@@ -88,7 +88,9 @@ def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
         return "/v1/chat/completions"
     if endpoint is Endpoint.EMBEDDINGS:
         return "/v1/embeddings"
-    return DEFAULT_PROBE_ENDPOINTS[backend]
+    if endpoint is Endpoint.AUTO:
+        return DEFAULT_PROBE_ENDPOINTS[backend]
+    raise ValueError(f"unknown endpoint: {endpoint!r}")
 
 
 def _capacity_findings(
