@@ -22,6 +22,7 @@ import math
 
 import httpx
 
+from llmprobe.backends.vllm import extract_prompt_tokens
 from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
 from llmprobe.tokens import _tokenize
 
@@ -60,6 +61,34 @@ async def _exact_tokenization_available(client: httpx.AsyncClient, base_url: str
     probe = " ".join([_FILLER, _FINAL_A, _FINAL_B, _CANARY])
     count = await _tokenize(client, base_url.rstrip("/"), probe)
     return count == 4
+
+
+async def _vllm_prompt_tokens_exact(
+    client: httpx.AsyncClient, base_url: str, endpoint: str
+) -> bool:
+    """For vLLM, verify a probe length against the server's own count.
+
+    vLLM reports ``usage.prompt_tokens`` on its responses, so the server itself
+    is the source of truth for the exact count. We send one known-length probe
+    and trust the response only when ``usage.prompt_tokens`` equals the exact
+    length we asked for (exported via :func:`extract_prompt_tokens`); anything
+    else means the response carried no usable count and we report an estimate.
+    """
+    n = LO
+    base = base_url.rstrip("/")
+    body: dict = {"input": " ".join([_FILLER] * n), "model": "vllm-probe"}
+    try:
+        resp = await client.post(f"{base}{endpoint}", json=body)
+    except httpx.HTTPError:
+        return False
+    if resp.status_code != 200:
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    reported = extract_prompt_tokens(payload)
+    return reported == n
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -189,10 +218,15 @@ async def probe_capacity(
     """
     requests = [0]
 
-    # Can we verify our prompt lengths against the server's tokenizer? If not,
-    # every reported count is a nominal estimate and token_count_exact must be
-    # False — we never claim a verified count we could not obtain.
-    exact = await _exact_tokenization_available(client, base_url)
+    # Can we verify our prompt lengths against the server's own tokenizer? If
+    # not, every reported count is a nominal estimate and token_count_exact must
+    # be False — we never claim a verified count we could not obtain. vLLM is
+    # the exception: it reports its own exact count via usage.prompt_tokens, so
+    # we verify against that field instead of /tokenize.
+    if backend == Backend.VLLM:
+        exact = await _vllm_prompt_tokens_exact(client, base_url, endpoint)
+    else:
+        exact = await _exact_tokenization_available(client, base_url)
 
     async def classify(n: int) -> str:
         if endpoint.rstrip("/").endswith("/chat/completions"):
