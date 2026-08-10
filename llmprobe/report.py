@@ -146,9 +146,20 @@ def _finding_lines(report: ProbeReport) -> list[str]:
     for finding in report.findings:
         adv = _esc(finding.advertised)
         meas = _esc(finding.measured)
+        adv_marker = (
+            f" ({finding.advertised_source.value})"
+            if finding.advertised is not None
+            else ""
+        )
+        meas_marker = (
+            f" ({finding.measured_source.value})"
+            if finding.measured is not None
+            else ""
+        )
         lines.append(
             f"- **[{finding.severity.value}] {finding.code}**: "
-            f"advertised={adv} vs measured={meas} — {_esc(finding.message)}"
+            f"advertised={adv}{adv_marker} vs measured={meas}{meas_marker} — "
+            f"{_esc(finding.message)}"
         )
     return lines
 

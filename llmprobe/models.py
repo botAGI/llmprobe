@@ -96,12 +96,22 @@ class Severity(str, Enum):
 
 
 class Finding(BaseModel):
-    """A single discrepancy (or note) discovered during a probe."""
+    """A single discrepancy (or note) discovered during a probe.
+
+    ``advertised`` is whatever value the server or the caller led us to
+    believe, so its provenance is ``read`` unless stated otherwise; ``measured``
+    is always the value we probed or derived ourselves, hence ``measured``.
+    Both carry an explicit provenance marker so the "provenance on every value"
+    guarantee holds even outside the config/capacity tables. When the
+    corresponding value is ``None`` the source marker is irrelevant.
+    """
 
     severity: Severity
     code: str
     advertised: str | int | None = None
+    advertised_source: Provenance = Provenance.READ
     measured: str | int | None = None
+    measured_source: Provenance = Provenance.MEASURED
     message: str
 
 

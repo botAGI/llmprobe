@@ -13,7 +13,7 @@
 
 ## Findings
 
-- **[mismatch] UBATCH_CEILING**: advertised=8192 vs measured=7168 — requests past 7168 tokens are silently truncated
+- **[mismatch] UBATCH_CEILING**: advertised=8192 (read) vs measured=7168 (measured) — requests past 7168 tokens are silently truncated
 
 ## Fix
 
