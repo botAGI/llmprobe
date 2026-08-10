@@ -168,7 +168,7 @@ async def probe(
     async with _make_client(base_url, api_key, timeout) as client:
         await _assert_reachable(client)
         config, findings = await read_effective_config(
-            client, base_url, claimed_ctx
+            client, base_url, claimed_ctx, timeout
         )
         findings.extend(check_slots(config, claimed_ctx))
 
