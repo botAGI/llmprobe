@@ -11,6 +11,8 @@ width and breaks on CI).
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import httpx
 import pytest
@@ -47,6 +49,13 @@ def _asgi_client(app: object, api_key: str | None = None):
         )
 
     return make
+
+
+# The real (network-bound) client factory. ``monkeypatch`` can leak a prior
+# test's ASGI client into ``cli._make_client`` under asyncio auto-mode, so a
+# test that must exercise the real timeout path pins this factory explicitly
+# instead of trusting ``cli._make_client`` at call time.
+_REAL_CLIENT_FACTORY = cli._make_client
 
 
 def _invoke(
@@ -256,3 +265,45 @@ def test_auto_endpoints_are_distinct_per_backend() -> None:
     """
     paths = {backend: cli._resolve_path(cli.Endpoint.AUTO, backend) for backend in Backend}
     assert len(set(paths.values())) > 1
+
+
+def test_short_timeout_fails_fast_against_slow_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short ``--timeout`` against a slow server fails fast instead of hanging.
+
+    Uses the REAL client factory (not the ASGI seam) against a local socket
+    server that sleeps before replying, so the httpx read timeout is genuinely
+    exercised rather than short-circuited by an in-process transport.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _Slow(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            time.sleep(2.0)
+            body = b'{"object":"list","data":[{"id":"mock"}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # silence per-request logging
+            pass
+
+    monkeypatch.setattr(cli, "_make_client", _REAL_CLIENT_FACTORY)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Slow)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        start = time.monotonic()
+        result = runner.invoke(cli.app, [url, "--timeout", "0.1"])
+        elapsed = time.monotonic() - start
+    finally:
+        server.shutdown()
+        thread.join()
+
+    # The first config read exceeds the 0.1s timeout and fails fast.
+    assert result.exit_code == 2
+    assert elapsed < 2.0, f"expected fail-fast, took {elapsed:.2f}s"
