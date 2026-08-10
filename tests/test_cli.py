@@ -18,7 +18,8 @@ import typer
 from typer.testing import CliRunner
 
 import llmprobe.cli as cli
-from llmprobe.models import CliffBehavior
+from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
+from llmprobe.models import Backend, CliffBehavior
 from llmprobe.probes.capacity import DEFAULT_CEILING
 
 from tests.mocks.server import make_mock_server
@@ -222,3 +223,36 @@ def test_timeout_is_threaded_into_every_client(
     result = runner.invoke(cli.app, [BASE_URL, "--timeout", "3.5", "--json"])
     assert result.exit_code == 0
     assert captured["timeout"] == 3.5
+
+
+def test_auto_endpoint_resolves_per_backend() -> None:
+    """``--endpoint auto`` resolves to each backend's default probe path.
+
+    The README promises that the default ``auto`` selection resolves per
+    backend. ``auto`` must not silently collapse to embeddings for every
+    backend: an explicit backend-aware default must be used instead, and an
+    explicit ``chat``/``embeddings`` choice is never overridden.
+    """
+    for backend in Backend:
+        resolved = cli._resolve_path(cli.Endpoint.AUTO, backend)
+        assert resolved == DEFAULT_PROBE_ENDPOINTS[backend], (
+            f"auto did not resolve to {backend}'s default probe path"
+        )
+
+    assert cli._resolve_path(cli.Endpoint.CHAT, Backend.LLAMACPP) == (
+        "/v1/chat/completions"
+    )
+    assert cli._resolve_path(cli.Endpoint.EMBEDDINGS, Backend.VLLM) == (
+        "/v1/embeddings"
+    )
+
+
+def test_auto_endpoints_are_distinct_per_backend() -> None:
+    """Per-backend auto defaults must not all be identical.
+
+    If every backend collapsed to the same endpoint the ``auto`` resolution
+    would be meaningless — the whole point is a mapping that differs by the
+    detected backend.
+    """
+    paths = {backend: cli._resolve_path(cli.Endpoint.AUTO, backend) for backend in Backend}
+    assert len(set(paths.values())) > 1
