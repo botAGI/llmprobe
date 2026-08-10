@@ -22,11 +22,13 @@ import httpx
 import typer
 from rich.console import Console
 
+from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
 from llmprobe.probes.capacity import DEFAULT_CEILING, probe_capacity
 from llmprobe.probes.config import read_effective_config
 from llmprobe.probes.slots import check_slots
 from llmprobe.report import to_json, to_markdown
 from llmprobe.models import (
+    Backend,
     CapacityResult,
     CliffBehavior,
     Finding,
@@ -73,11 +75,20 @@ def redact_base_url(base_url: str) -> str:
     return _USERINFO_RE.sub("//", base_url)
 
 
-def _resolve_path(endpoint: Endpoint) -> str:
-    """Map an ``Endpoint`` selection onto a concrete probe path."""
+def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
+    """Map an ``Endpoint`` selection onto a concrete probe path.
+
+    ``AUTO`` is resolved against the detected ``backend`` using the per-backend
+    default probe endpoint (see :data:`llmprobe.backends.DEFAULT_PROBE_ENDPOINTS`),
+    so the endpoint actually exercised matches the backend type rather than
+    always defaulting to embeddings. Explicit ``CHAT`` / ``EMBEDDINGS`` choices
+    are honoured directly and never overridden.
+    """
     if endpoint is Endpoint.CHAT:
         return "/v1/chat/completions"
-    return "/v1/embeddings"
+    if endpoint is Endpoint.EMBEDDINGS:
+        return "/v1/embeddings"
+    return DEFAULT_PROBE_ENDPOINTS[backend]
 
 
 def _capacity_findings(
@@ -169,7 +180,7 @@ async def probe(
             cap = await probe_capacity(
                 client,
                 base_url,
-                _resolve_path(endpoint),
+                _resolve_path(endpoint, config.backend),
                 ceiling=DEFAULT_CEILING,
                 backend=config.backend,
             )
