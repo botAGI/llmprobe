@@ -136,7 +136,7 @@ def _apply_cache_config(result: dict[str, Any]) -> None:
     * ``n_ctx_per_slot`` — context reservable per slot ≈ ``block_size``.
 
     These are approximations derived from what the server reported, so their
-    provenance is ``estimated``. When the metric is absent or the labels cannot
+    provenance is ``inferred``. When the metric is absent or the labels cannot
     be parsed to integers we fall back to a default of ``0`` (still not
     ``unknown``) so downstream rendering never shows an empty marker.
     """
