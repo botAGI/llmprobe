@@ -137,13 +137,16 @@ async def read_effective_config(
     client: httpx.AsyncClient,
     base_url: str,
     claimed_ctx: int | None,
+    timeout: float | None = None,
 ) -> tuple[EffectiveConfig, list[Finding]]:
     """Detect the backend and read the effective configuration.
 
     ``claimed_ctx`` is accepted for API compatibility with downstream probes
     that pass a caller-claimed context; adapter selection itself never depends
     on it. The winning adapter's ``read_config`` is invoked and any findings
-    it emitted are returned alongside the configuration.
+    it emitted are returned alongside the configuration. ``timeout`` is
+    threaded through for callers that bound every request; the shared client
+    already enforces it on the wire.
 
     The effective config is normalised so that an absent parallel slot count is
     interpreted as the server default rather than as a single slot: a llama.cpp
