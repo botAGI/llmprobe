@@ -113,7 +113,7 @@ def test_silent_truncation_mock_exits_1_when_claimed_ctx_mismatches(
     assert result.exit_code == 1
 
     report = json.loads(result.stdout)
-    severities = {f["severity"] for f in report["findings"]}
+    severities = {f["severity"]["value"] for f in report["findings"]}
     assert "mismatch" in severities
 
 
@@ -126,8 +126,8 @@ def test_probe_reports_the_measured_cliff(monkeypatch: pytest.MonkeyPatch) -> No
     report = json.loads(result.stdout)
     assert report["capacity"] != []
     cap = report["capacity"][0]
-    assert cap["max_accepted_tokens"] == 512
-    assert cap["cliff_behavior"] == CliffBehavior.SILENT_TRUNCATION.value
+    assert cap["max_accepted_tokens"]["value"] == 512
+    assert cap["cliff_behavior"]["value"] == CliffBehavior.SILENT_TRUNCATION.value
 
 
 def test_honest_mock_probes_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -150,8 +150,8 @@ def test_probe_ceiling_uses_claimed_context_reference(
 
     report = json.loads(result.stdout)
     cap = report["capacity"][0]
-    assert cap["max_accepted_tokens"] == DEFAULT_CEILING
-    assert cap["cliff_behavior"] == CliffBehavior.ACCEPTED.value
+    assert cap["max_accepted_tokens"]["value"] == DEFAULT_CEILING
+    assert cap["cliff_behavior"]["value"] == CliffBehavior.ACCEPTED.value
 
 
 def test_unreachable_server_exits_2() -> None:
@@ -193,8 +193,12 @@ def test_api_key_wrong_rejects_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result.exit_code == 2
     report = json.loads(result.stdout)
-    errors = [f for f in report["findings"] if f["severity"] == "error"]
-    assert any(f["code"] == "GENERIC_MODELS_HTTP_ERROR" for f in errors)
+    errors = [
+        f for f in report["findings"] if f["severity"]["value"] == "error"
+    ]
+    assert any(
+        f["code"]["value"] == "GENERIC_MODELS_HTTP_ERROR" for f in errors
+    )
 
 
 def test_url_embedded_api_key_is_redacted_from_card() -> None:

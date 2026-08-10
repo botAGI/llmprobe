@@ -5,10 +5,17 @@ module other than :mod:`llmprobe.models`. The markdown card is the artifact
 people paste into issues, so it must be tight and honest — every table row
 carries a provenance marker (read / measured / inferred / unknown). A row
 without a marker is a bug.
+
+The JSON form must uphold the same promise: every reported value is emitted
+as a ``{"value": ..., "provenance": ...}`` object so that a machine consumer
+can tell a measured number from an honest unknown. A value emitted without a
+provenance key is a bug.
 """
 
 from __future__ import annotations
 
+import json
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from llmprobe.models import (
@@ -44,14 +51,105 @@ def _next_power_of_two(value: int) -> int:
     return n
 
 
-def to_json(report: ProbeReport) -> str:
-    """Render the report as compact JSON.
+def _pv(value: Any, provenance: Provenance) -> dict[str, Any]:
+    """Bundle a reported value with its provenance marker.
 
-    This is a pass-through over the pydantic model; it exists so callers do
-    not reach into serialization details and so the golden JSON is produced
-    through a single, reviewable code path.
+    Every leaf of the JSON report is emitted as ``{"value": ..., "provenance":
+    ...}`` so the "provenance on every value" promise from the README holds for
+    the machine-readable form too, not just the markdown card.
     """
-    return report.model_dump_json()
+    return {"value": value, "provenance": provenance.value}
+
+
+def _config_provenance(config: Any, field: str) -> Provenance:
+    """Provenance for a config field, defaulting honestly to ``unknown``.
+
+    Backends record provenance per-field in ``config.sources``; a field with no
+    recorded source is reported ``unknown`` rather than silently guessed.
+    """
+    return config.sources.get(field, Provenance.UNKNOWN)
+
+
+def _to_json_object(report: ProbeReport) -> dict[str, Any]:
+    """Build the provenance-augmented JSON representation of a report."""
+    config = report.config
+    config_json: dict[str, Any] = {
+        "backend": _pv(config.backend.value, Provenance.READ),
+        "model_id": _pv(
+            config.model_id,
+            Provenance.READ if config.model_id else Provenance.UNKNOWN,
+        ),
+        "n_ctx_total": _pv(
+            config.n_ctx_total, _config_provenance(config, "n_ctx_total")
+        ),
+        "n_ctx_per_slot": _pv(
+            config.n_ctx_per_slot, _config_provenance(config, "n_ctx_per_slot")
+        ),
+        "n_batch": _pv(
+            config.n_batch, _config_provenance(config, "n_batch")
+        ),
+        "n_ubatch": _pv(
+            config.n_ubatch, _config_provenance(config, "n_ubatch")
+        ),
+        "total_slots": _pv(
+            config.total_slots, _config_provenance(config, "total_slots")
+        ),
+    }
+
+    capacity = [
+        {
+            "endpoint": _pv(cap.endpoint, Provenance.READ),
+            "max_accepted_tokens": _pv(
+                cap.max_accepted_tokens, cap.max_accepted_source
+            ),
+            "token_count_exact": _pv(
+                cap.token_count_exact, Provenance.MEASURED
+            ),
+            "cliff_behavior": _pv(
+                cap.cliff_behavior.value, Provenance.MEASURED
+            ),
+            "probe_requests_used": _pv(
+                cap.probe_requests_used, Provenance.MEASURED
+            ),
+        }
+        for cap in report.capacity
+    ]
+
+    findings = [
+        {
+            "severity": _pv(f.severity.value, Provenance.INFERRED),
+            "code": _pv(f.code, Provenance.READ),
+            "advertised": _pv(
+                f.advertised,
+                f.advertised_source if f.advertised is not None else Provenance.UNKNOWN,
+            ),
+            "measured": _pv(
+                f.measured,
+                f.measured_source if f.measured is not None else Provenance.UNKNOWN,
+            ),
+            "message": _pv(f.message, Provenance.READ),
+        }
+        for f in report.findings
+    ]
+
+    return {
+        "base_url": _pv(report.base_url, Provenance.READ),
+        "config": config_json,
+        "capacity": capacity,
+        "findings": findings,
+    }
+
+
+def to_json(report: ProbeReport) -> str:
+    """Render the report as compact JSON with provenance on every value.
+
+    Unlike a bare pydantic dump, every reported leaf is wrapped as
+    ``{"value": ..., "provenance": ...}`` so a machine consumer can always tell
+    a measured number from an honest unknown. The structure is produced through
+    a single reviewable code path; callers never reach into serialization
+    details.
+    """
+    return json.dumps(_to_json_object(report), separators=(",", ":"))
 
 
 def _fmt(value: object) -> str:

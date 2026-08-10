@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from llmprobe.models import (
     Backend,
@@ -222,11 +223,34 @@ def test_plain_base_url_is_left_untouched() -> None:
     assert "# Capability Report — http://localhost:8080" in md
 
 
-def test_to_json_round_trips_through_model() -> None:
+def test_to_json_every_value_has_provenance() -> None:
+    """THE machine-readable point of this module: every value carries a marker.
+
+    The README promises provenance on every value; the ``--json`` output wraps
+    each reported leaf as ``{"value": ..., "provenance": ...}`` where the
+    provenance is one of read / measured / inferred / unknown. A value emitted
+    without a provenance key (or with an invalid marker) is a bug.
+    """
     report = _clean_report()
-    dumped = to_json(report)
-    reloaded = ProbeReport.model_validate_json(dumped)
-    assert reloaded == report
+    root = json.loads(to_json(report))
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if "value" in node:
+                assert "provenance" in node, f"value without provenance: {node!r}"
+                assert node["provenance"] in {
+                    "read",
+                    "measured",
+                    "inferred",
+                    "unknown",
+                }, f"invalid provenance: {node!r}"
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(root)
 
 
 def test_user_provided_strings_are_escaped_against_markdown_injection() -> None:
