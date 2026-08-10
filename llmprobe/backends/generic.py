@@ -22,6 +22,9 @@ from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance, Sever
 
 GENERIC_DETECT_CONFIDENCE = 0.1
 
+#: Per-request timeout in seconds applied to the /v1/models read.
+GENERIC_REQUEST_TIMEOUT = 10.0
+
 #: Finding codes emitted when the sole generic endpoint cannot be read.
 MODELS_UNREACHABLE_CODE = "GENERIC_MODELS_UNREACHABLE"
 MODELS_HTTP_ERROR_CODE = "GENERIC_MODELS_HTTP_ERROR"
@@ -55,7 +58,9 @@ async def read_config(
     model_id = ""
     findings: list[Finding] = []
     try:
-        resp = await client.get(f"{base}/v1/models")
+        resp = await client.get(
+            f"{base}/v1/models", timeout=GENERIC_REQUEST_TIMEOUT
+        )
     except httpx.HTTPError as exc:
         findings.append(
             Finding(
