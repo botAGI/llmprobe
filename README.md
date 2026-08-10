@@ -39,8 +39,10 @@ uvx llmprobe http://localhost:8080 --timeout 30      # per-request timeout in se
 Exit codes: `0` clean, `1` advertised capacity does not match measured, `2` error.
 That makes it usable as a CI gate, not just a one-off report.
 
-By default llmprobe reads configuration only (`--safe`); pass `--probe` to send
-inference traffic. `--endpoint` selects which endpoint the capacity probe
+Inference is off by default: llmprobe reads configuration only. This is the
+`safe` mode. `--probe` is the only flag that enables inference traffic;
+`--safe` is the default state of the `--probe/--safe` pair, so you never need
+to pass it explicitly. `--endpoint` selects which endpoint the capacity probe
 exercises (`embeddings`, `chat`, or `auto`, the default that resolves per
 backend). Every HTTP request carries a per-request timeout (default 10s,
 overridable with `--timeout`) so an unresponsive server fails fast instead of
