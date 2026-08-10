@@ -15,7 +15,15 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from llmprobe.backends import generic, llamacpp, ollama, vllm
-from llmprobe.models import Backend, EffectiveConfig, Finding
+from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance
+
+# llama.cpp does not expose the effective --parallel slot count over HTTP in
+# every release. When total_slots is absent we must not assume a single slot:
+# llama.cpp treats an omitted --parallel flag as a default of 4 (see
+# tools/server/server.cpp), so the honest per-slot context is n_ctx / 4, not
+# n_ctx / 1. This is the value documented in the README's "what you passed"
+# guarantee.
+_LLAMACPP_DEFAULT_PARALLEL = 4
 
 # Detection priority: when two adapters report equal confidence we rely on a
 # fixed order rather than on completion order, so the winner is deterministic.
@@ -96,6 +104,35 @@ def _merge_findings(
     return result, []
 
 
+def _apply_llamacpp_parallel_default(config: EffectiveConfig) -> EffectiveConfig:
+    """Apply llama.cpp's default parallelism to an unadvertised slot count.
+
+    A llama.cpp server that omits ``total_slots`` from ``/props`` is still
+    running --parallel with a default of 4, not 1. Assume the documented
+    default so a total ``n_ctx`` is divided by 4 (the honest per-slot context)
+    rather than being misreported as a single-slot value. Nothing is invented:
+    the assumption is the documented server default and is marked INFERRED.
+    """
+    if config.backend is not Backend.LLAMACPP:
+        return config
+    if config.total_slots is not None:
+        return config
+    if not isinstance(config.n_ctx_per_slot, int):
+        return config
+
+    sources = dict(config.sources)
+    sources["total_slots"] = Provenance.INFERRED
+    sources["n_ctx_total"] = Provenance.INFERRED
+
+    return config.model_copy(
+        update={
+            "total_slots": _LLAMACPP_DEFAULT_PARALLEL,
+            "n_ctx_total": config.n_ctx_per_slot * _LLAMACPP_DEFAULT_PARALLEL,
+            "sources": sources,
+        }
+    )
+
+
 async def read_effective_config(
     client: httpx.AsyncClient,
     base_url: str,
@@ -107,9 +144,15 @@ async def read_effective_config(
     that pass a caller-claimed context; adapter selection itself never depends
     on it. The winning adapter's ``read_config`` is invoked and any findings
     it emitted are returned alongside the configuration.
+
+    The effective config is normalised so that an absent parallel slot count is
+    interpreted as the server default rather than as a single slot: a llama.cpp
+    server that does not advertise ``total_slots`` still runs ``--parallel``
+    with a default of 4, so the total ``n_ctx`` is divided by 4.
     """
     backend = await _select_backend(client, base_url)
     base = base_url.rstrip("/")
     module = _SELECTABLE_ADAPTERS[backend]
     result = await module.read_config(client, base)
-    return _merge_findings(result)
+    config, findings = _merge_findings(result)
+    return _apply_llamacpp_parallel_default(config), findings
