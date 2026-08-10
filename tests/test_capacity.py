@@ -149,3 +149,24 @@ async def test_token_count_is_estimate_when_tokenizer_unavailable() -> None:
             client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.token_count_exact is False
+
+
+@pytest.mark.asyncio
+async def test_vllm_prompt_tokens_yields_exact_count() -> None:
+    """For a vLLM backend that reports a matching ``usage.prompt_tokens`` the
+    probed lengths are verifiable against the server's own count, so
+    ``token_count_exact`` must be ``True``.
+
+    This is the README promise: 'Exact count via usage.prompt_tokens (vLLM)'.
+    The mock server reports ``usage.prompt_tokens`` equal to the exact length
+    we asked for; the probe must trust that field and report the count as
+    exact rather than falling back to an approximation.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.VLLM
+        )
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+    assert result.token_count_exact is True
