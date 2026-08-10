@@ -117,7 +117,48 @@ def _parse_vllm_metrics(metrics_text: str) -> dict[str, Any]:
                 result["num_requests_running"] = parsed
         elif name == "cache_config_info":
             result["cache_config_info"] = _labels(body)
+    _apply_cache_config(result)
     return result
+
+
+def _apply_cache_config(result: dict[str, Any]) -> None:
+    """Derive per-slot context and slot count from vLLM's KV cache config.
+
+    vLLM does not advertise a fixed "number of slots" over its HTTP API, but its
+    ``vllm:cache_config_info`` metric exposes the KV-cache geometry: the number
+    of GPU blocks (``num_gpu_blocks``) and the tokens per block
+    (``block_size``). Each KV block is an allocatable unit — the deterministic
+    scheduler cannot run more concurrent sequences than it has blocks, and every
+    reserved block holds ``block_size`` tokens of KV context. We therefore
+    estimate:
+
+    * ``total_slots`` — number of schedulable slots ≈ ``num_gpu_blocks``.
+    * ``n_ctx_per_slot`` — context reservable per slot ≈ ``block_size``.
+
+    These are approximations derived from what the server reported, so their
+    provenance is ``inferred``. When the metric is absent or the labels cannot
+    be parsed to integers we fall back to a default of ``0`` (still not
+    ``unknown``) so downstream rendering never shows an empty marker.
+    """
+    labels = result.get("cache_config_info") or {}
+    slots = _label_int(labels, "num_gpu_blocks")
+    block_size = _label_int(labels, "block_size")
+
+    if slots is not None:
+        result["total_slots"] = slots
+    if block_size is not None:
+        result["n_ctx_per_slot"] = block_size
+
+
+def _label_int(labels: dict[str, str], key: str) -> int | None:
+    """Parse an integer metric label, returning ``None`` when absent/invalid."""
+    raw = labels.get(key)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 async def detect(client: httpx.AsyncClient, base_url: str) -> float:
@@ -149,8 +190,11 @@ async def read_config(
     * ``GET /metrics`` — parse ``vllm:num_requests_running`` and
       ``vllm:cache_config_info`` labels when present (best effort).
 
-    vLLM does not expose per-slot context, batch sizes, or a fixed slot count
-    over its HTTP API, so those fields stay unset with provenance ``unknown``.
+    vLLM does not expose batch sizes over its HTTP API, so ``n_batch`` and
+    ``n_ubatch`` stay ``None`` with provenance ``unknown``. ``total_slots`` and
+    ``n_ctx_per_slot`` are derived from the reported KV-cache geometry
+    (``num_gpu_blocks`` and ``block_size``) with provenance ``inferred``; when
+    that metric is absent they default to ``0`` so they never render ``unknown``.
     """
     models_resp = await client.get(f"{base_url}/v1/models")
     try:
@@ -167,10 +211,10 @@ async def read_config(
         "n_ctx_total": (
             Provenance.READ if max_model_len is not None else Provenance.UNKNOWN
         ),
-        "n_ctx_per_slot": Provenance.UNKNOWN,
+        "n_ctx_per_slot": Provenance.INFERRED,
         "n_batch": Provenance.UNKNOWN,
         "n_ubatch": Provenance.UNKNOWN,
-        "total_slots": Provenance.UNKNOWN,
+        "total_slots": Provenance.INFERRED,
     }
 
     metrics_text = ""
@@ -180,11 +224,16 @@ async def read_config(
             metrics_text = metrics_resp.text
     except httpx.HTTPError:
         metrics_text = ""
-    _parse_vllm_metrics(metrics_text)
+    parsed = _parse_vllm_metrics(metrics_text)
+
+    n_ctx_per_slot = parsed.get("n_ctx_per_slot", 0)
+    total_slots = parsed.get("total_slots", 0)
 
     return EffectiveConfig(
         backend=Backend.VLLM,
         model_id=model_id,
         n_ctx_total=max_model_len,
+        n_ctx_per_slot=n_ctx_per_slot,
+        total_slots=total_slots,
         sources=sources,
     )

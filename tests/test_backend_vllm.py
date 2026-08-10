@@ -296,6 +296,79 @@ def test_extract_prompt_tokens_none_when_not_int() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_config_derives_slots_from_cache_config() -> None:
+    # The cache_config_info metric exposes the KV-cache geometry
+    # (num_gpu_blocks=6400, block_size=16); total_slots and n_ctx_per_slot must
+    # be derived from it rather than left unknown.
+    models = _fixture_text("vllm_models.json")
+    metrics = _fixture_text("vllm_metrics_live.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.total_slots == 6400
+    assert config.n_ctx_per_slot == 16
+    assert config.sources["total_slots"] == Provenance.INFERRED
+    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+
+
+@pytest.mark.asyncio
+async def test_read_config_slots_default_zero_when_no_cache_config() -> None:
+    # When the metrics carry no cache_config_info label we still report a
+    # default of 0 with inferred provenance rather than an unknown marker.
+    models = _fixture_text("vllm_models.json")
+    metrics = "\n".join(
+        [
+            "# HELP vllm:num_requests_running Requests currently running.",
+            "# TYPE vllm:num_requests_running gauge",
+            "vllm:num_requests_running 2.0",
+        ]
+    )
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.total_slots == 0
+    assert config.n_ctx_per_slot == 0
+    assert config.sources["total_slots"] == Provenance.INFERRED
+    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+
+
+@pytest.mark.asyncio
+async def test_read_config_slots_default_zero_when_metrics_empty() -> None:
+    models = _fixture_text("vllm_models.json")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, ""),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.total_slots == 0
+    assert config.n_ctx_per_slot == 0
+    assert config.sources["total_slots"] == Provenance.INFERRED
+    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+
+
+@pytest.mark.asyncio
 async def test_vllm_probe_uses_prompt_tokens_exact_count() -> None:
     """A vLLM server that reports usage.prompt_tokens drives an exact count.
 
