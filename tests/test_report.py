@@ -143,6 +143,16 @@ def test_every_table_data_row_has_a_provenance_marker() -> None:
             )
 
 
+def test_finding_values_carry_provenance_markers() -> None:
+    """A finding's advertised/measured values must carry provenance markers.
+
+    The README promises "provenance on every value"; a finding line that
+    reports two values with no marker would break that promise.
+    """
+    md = to_markdown(_silent_report())
+    assert "advertised=8192 (read) vs measured=7168 (measured)" in md
+
+
 def test_unknown_model_id_renders_source_unknown_not_read() -> None:
     """An unread model id must not be labelled ``read`` (honesty rule).
 
@@ -272,7 +282,7 @@ def test_user_provided_strings_are_escaped_against_markdown_injection() -> None:
     )
     assert "# Capability Report — http://host/path\\|with\\|pipes" in md
     assert "(/completion \\*suffix)" in md
-    assert "advertised=a \\| b vs measured=c \\`d" in md
+    assert "advertised=a \\| b (read) vs measured=c \\`d (measured)" in md
     assert "secret \\`API\\_KEY\\` leaked\\|here" in md
     assert "\\#x" in md
 
