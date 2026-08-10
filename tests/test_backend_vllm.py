@@ -349,6 +349,61 @@ async def test_read_config_slots_default_zero_when_no_cache_config() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_config_computes_slots_from_recorded_fixtures() -> None:
+    # The capacity-card fields 'slots' (total_slots) and 'context per slot'
+    # (n_ctx_per_slot) must be derived from the recorded vllm_metrics.txt
+    # fixture's cache_config_info labels, and must never render as unknown.
+    models = _fixture_text("vllm_models.json")
+    metrics = _fixture_text("vllm_metrics.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.backend == Backend.VLLM
+    # vllm_metrics.txt declares num_gpu_blocks="4096", block_size="16".
+    assert config.total_slots == 4096
+    assert config.n_ctx_per_slot == 16
+    assert config.sources["total_slots"] == Provenance.INFERRED
+    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+    assert config.total_slots != 0
+    assert config.n_ctx_per_slot != 0
+    assert config.sources["total_slots"] != Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] != Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_read_config_slots_fields_not_unknown_on_recorded_fixtures() -> None:
+    # Regression guard: processing the recorded fixtures must never leave the
+    # capability-card 'slots' / 'context per slot' fields as unknown. The two
+    # fixtures together (models + metrics) carry everything needed to derive
+    # both slots and per-slot context.
+    models = _fixture_text("vllm_models.json")
+    metrics = _fixture_text("vllm_metrics.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.total_slots is not None
+    assert config.n_ctx_per_slot is not None
+    assert config.sources["total_slots"] != Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] != Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_read_config_slots_default_zero_when_metrics_empty() -> None:
     models = _fixture_text("vllm_models.json")
     client = _client(
