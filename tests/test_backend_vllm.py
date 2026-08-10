@@ -11,11 +11,20 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llmprobe.backends.vllm import _parse_vllm_metrics, detect, read_config
+from llmprobe.backends.vllm import (
+    _parse_vllm_metrics,
+    detect,
+    extract_prompt_tokens,
+    read_config,
+)
 from llmprobe.models import Backend, Provenance
+from llmprobe.probes.capacity import probe_capacity
+
+from tests.mocks.server import make_mock_server
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE_URL = "http://vllm.test"
+EMBEDDINGS = "/v1/embeddings"
 
 
 def _fixture_text(name: str) -> str:
@@ -262,3 +271,50 @@ def test_parse_vllm_metrics_comments_only_returns_no_metrics() -> None:
     )
     result = _parse_vllm_metrics(comments_only)
     assert result == {}
+
+
+def test_extract_prompt_tokens_reads_usage_count() -> None:
+    # vLLM reports usage.prompt_tokens on its responses; the exact count the
+    # server itself reported must be read back verbatim.
+    payload = {
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": [0.1], "index": 0}],
+        "usage": {"prompt_tokens": 16, "total_tokens": 16},
+    }
+    assert extract_prompt_tokens(payload) == 16
+
+
+def test_extract_prompt_tokens_none_when_missing() -> None:
+    assert extract_prompt_tokens({}) is None
+    assert extract_prompt_tokens({"usage": {}}) is None
+    assert extract_prompt_tokens(None) is None
+
+
+def test_extract_prompt_tokens_none_when_not_int() -> None:
+    payload = {"usage": {"prompt_tokens": "16"}}
+    assert extract_prompt_tokens(payload) is None
+
+
+@pytest.mark.asyncio
+async def test_vllm_probe_uses_prompt_tokens_exact_count() -> None:
+    """A vLLM server that reports usage.prompt_tokens drives an exact count.
+
+    The mock server carries no /tokenize endpoint (tokenize_enabled=False), so
+    the /tokenize path cannot vouch for exactness; only the vLLM
+    usage.prompt_tokens field can. If the probe used that exact count the result
+    must report token_count_exact=True; if it silently fell back to an
+    approximation it would be False and the claimed exactness would be lost.
+    """
+    server = make_mock_server(
+        max_tokens=512, behavior="hard_error", tokenize_enabled=False
+    )
+    transport = httpx.ASGITransport(app=server)
+    async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            EMBEDDINGS,
+            ceiling=32768,
+            backend=Backend.VLLM,
+        )
+    assert result.token_count_exact is True

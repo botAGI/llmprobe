@@ -22,6 +22,23 @@ VLLM_PREFIX = "vllm:"
 VLLM_DETECT_CONFIDENCE = 0.95
 
 
+def extract_prompt_tokens(payload: Any) -> int | None:
+    """Return ``usage.prompt_tokens`` from a vLLM API response.
+
+    vLLM reports ``usage.prompt_tokens`` on its chat and embeddings responses;
+    this reads the exact number the server itself reported. Returns ``None``
+    when the field is absent or not an integer — we never fabricate a count.
+    """
+    try:
+        usage = payload["usage"]
+        tokens = usage["prompt_tokens"]
+    except (KeyError, TypeError):
+        return None
+    if not isinstance(tokens, int):
+        return None
+    return tokens
+
+
 def _metric_lines(metrics_text: str | None) -> list[str]:
     """Return non-empty, non-comment lines from a Prometheus text dump.
 
