@@ -35,6 +35,7 @@ def make_mock_server(
     backend: str = "llamacpp",
     required_token: str | None = None,
     tokenize_enabled: bool = True,
+    required_model: str | None = None,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -53,9 +54,27 @@ def make_mock_server(
     When ``tokenize_enabled`` is ``False``, the ``/tokenize`` endpoint returns
     404 so a probe cannot verify exact token counts and must report the count as
     an estimate (``token_count_exact=False``).
+
+    When ``required_model`` is set, the probe endpoints (``/v1/embeddings`` and
+    ``/v1/chat/completions``) accept a request only when its body names that
+    exact model; any other model name is refused with HTTP 404 (a
+    ``model_not_found`` error), exactly as a real server would reject a
+    non-loaded model. ``/tokenize`` and the config-read endpoints are NOT gated,
+    since real servers accept those regardless of the requested model. This is
+    the safety net for the "use the real model from config" contract: a probe
+    that hardcodes a mock-derived name instead of the learner-supplied model
+    will 404 and fail.
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
+
+    def _model_required(model_name: str | None, response: Response) -> bool:
+        if not required_model:
+            return True
+        if model_name != required_model:
+            response.status_code = 404
+            return False
+        return True
 
     app = FastAPI(title="mock-llamaserver")
 
@@ -114,6 +133,14 @@ def make_mock_server(
                 "data": [],
                 "usage": {"prompt_tokens": 0, "total_tokens": 0},
             }
+        if not _model_required(body.get("model"), response):
+            return {
+                "error": {
+                    "message": "The model does not exist or is not loaded.",
+                    "type": "model_not_found",
+                    "code": 404,
+                }
+            }
         raw = body.get("input", "")
         inputs: list[str]
         if isinstance(raw, str):
@@ -164,6 +191,17 @@ def make_mock_server(
                 "model": "mock",
                 "choices": [],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+        if not _model_required(body.get("model"), response):
+            return {
+                "id": "cmpl-mock",
+                "object": "chat.completion",
+                "model": "mock",
+                "error": {
+                    "message": "The model does not exist or is not loaded.",
+                    "type": "model_not_found",
+                    "code": 404,
+                },
             }
         messages = body.get("messages", [])
         prompt = ""
