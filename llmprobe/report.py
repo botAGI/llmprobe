@@ -1,10 +1,15 @@
 """Render a :class:`ProbeReport` as JSON or as a markdown capability card.
 
-Pure formatting only: no I/O, no network, and no imports from any llmprobe
-module other than :mod:`llmprobe.models`. The markdown card is the artifact
-people paste into issues, so it must be tight and honest — every table row
-carries a provenance marker (read / measured / inferred / unknown). A row
-without a marker is a bug.
+Pure formatting only: no network, and no imports from any llmprobe module
+other than :mod:`llmprobe.models`. The one disk read is our own version,
+looked up once at import from package metadata / ``pyproject.toml`` so the
+card can carry that static value. The markdown card is the artifact people
+paste into issues, so it must be tight and honest — every table row carries a
+provenance marker (read / measured / inferred / unknown). A row without a
+marker is a bug.
+
+The card also names the tool version and the (UTC) measurement time in the
+header so a pasted card is self-describing.
 
 The JSON form must uphold the same promise: every reported value is emitted
 as a ``{"value": ..., "provenance": ...}`` object so that a machine consumer
@@ -15,6 +20,10 @@ provenance key is a bug.
 from __future__ import annotations
 
 import json
+import tomllib
+from datetime import datetime, timezone
+from importlib import metadata
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -23,6 +32,32 @@ from llmprobe.models import (
     ProbeReport,
     Provenance,
 )
+
+
+def _tool_version() -> str:
+    """Return the installed llmprobe version, or ``unknown`` if it is hidden.
+
+    Prefers the ``version`` key in this repository's ``pyproject.toml`` (the
+    source of truth when running from a checkout), falling back to installed
+    package metadata, then to the honest ``unknown`` marker.
+    """
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            with pyproject.open("rb") as fh:
+                data = tomllib.load(fh)
+        except (tomllib.TOMLDecodeError, OSError):
+            data = {}
+        version = data.get("project", {}).get("version")
+        if version:
+            return str(version)
+    try:
+        return metadata.version("llmprobe")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+_VERSION = _tool_version()
 
 _HEADER_ROW = "| Property | Claimed | Measured | Source | Verdict |"
 _SEPARATOR_ROW = "| --- | --- | --- | --- | --- |"
@@ -289,10 +324,27 @@ def _fix_lines(report: ProbeReport) -> list[str]:
     ]
 
 
-def to_markdown(report: ProbeReport) -> str:
-    """Render the report as a tight, honest markdown capability card."""
+def to_markdown(
+    report: ProbeReport,
+    *,
+    version: str = _VERSION,
+    measured_at: datetime | None = None,
+) -> str:
+    """Render the report as a tight, honest markdown capability card.
+
+    The card title is followed by a header line naming the tool ``version``
+    and the ``measured_at`` measurement time in UTC, so a pasted card is
+    self-describing. When ``measured_at`` is omitted the current UTC time is
+    used; callers that need a deterministic card (tests, recorded fixtures)
+    pass an explicit value.
+    """
+    if measured_at is None:
+        measured_at = datetime.now(timezone.utc)
+    ts = measured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows: list[str] = [
         f"# Capability Report — {_esc(_sanitize_base_url(report.base_url))}",
+        "",
+        f"llmprobe {version} · measured {ts} (UTC)",
         "",
         _HEADER_ROW,
         _SEPARATOR_ROW,
