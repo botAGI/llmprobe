@@ -9,11 +9,14 @@ provenance ``UNKNOWN`` rather than being invented.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from llmprobe.models import Backend, EffectiveConfig, Provenance
+
+logger = logging.getLogger(__name__)
 
 
 def _base(base_url: str) -> str:
@@ -85,13 +88,15 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
     else:
         merge["n_ctx_total"] = Provenance.UNKNOWN
 
-    # /slots is optional: with --no-slots the server returns 501. Tolerate it.
+    # /slots is optional: with --no-slots the server returns 501. Tolerate it,
+    # but log the failure rather than swallowing it silently so a real problem
+    # reaching /slots is not invisible.
     try:
         slots_resp = await client.get(f"{base}/slots", timeout=client.timeout)
         if slots_resp.status_code == 200:
             _source_slot_ctx(slots_resp.json(), merge)
-    except httpx.HTTPError:
-        pass
+    except (httpx.HTTPError, ValueError):
+        logger.exception("GET %s/slots failed; per-slot cross-check skipped", base)
 
     return EffectiveConfig(
         backend=Backend.LLAMACPP,

@@ -10,12 +10,15 @@ produced. Imports only from :mod:`llmprobe.models` and
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Awaitable, Callable
 
 import httpx
 
 from llmprobe.backends import generic, llamacpp, ollama, vllm
 from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance
+
+logger = logging.getLogger(__name__)
 
 # llama.cpp does not expose the effective --parallel slot count over HTTP in
 # every release. When total_slots is absent we must not assume a single slot:
@@ -58,6 +61,13 @@ def _detect_adapter(
         try:
             score = await adapter(client, base_url)
         except Exception:
+            # Kept broad so a failing probe never blocks selection, but the
+            # swallow must not be silent: an unexpected exception (including a
+            # programming bug in an adapter) is logged so a misattributed
+            # backend selection is diagnosable instead of invisible.
+            logger.exception(
+                "backend detect() raised on %s; treated as no-match", base_url
+            )
             return 0.0
         return score if isinstance(score, (int, float)) else 0.0
 
