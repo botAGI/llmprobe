@@ -475,5 +475,6 @@ async def test_vllm_probe_uses_prompt_tokens_exact_count() -> None:
             Endpoint.EMBEDDINGS,
             ceiling=32768,
             backend=Backend.VLLM,
+            model="mock",
         )
     assert result.token_count_exact is True
