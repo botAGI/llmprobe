@@ -260,6 +260,19 @@ def test_auto_endpoint_resolves_per_backend() -> None:
     )
 
 
+def test_endpoint_chat_resolves_to_chat_completions() -> None:
+    """``--endpoint chat`` resolves ``_resolve_path`` to the chat completions path.
+
+    The README promises ``--endpoint chat`` exercises the chat endpoint. The
+    explicit ``CHAT`` choice, like ``EMBEDDINGS``, must be honoured directly
+    across every backend and never overridden by the backend default.
+    """
+    for backend in Backend:
+        assert cli._resolve_path(cli.Endpoint.CHAT, backend) == (
+            "/v1/chat/completions"
+        )
+
+
 def test_auto_endpoints_are_distinct_per_backend() -> None:
     """Per-backend auto defaults must not all be identical.
 
