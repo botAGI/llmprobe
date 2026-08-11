@@ -6,6 +6,9 @@ through ``httpx.ASGITransport`` — no network, no real inference server.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -15,6 +18,8 @@ from llmprobe.probes.capacity import probe_capacity
 from tests.mocks.server import make_mock_server
 
 BASE_URL = "http://mock"
+
+GOLDEN_DIR = Path(__file__).parent / "golden"
 
 EMBEDDINGS = "/v1/embeddings"
 
@@ -215,3 +220,84 @@ async def test_chat_honest_server_accepts_ceiling() -> None:
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_silent_truncation_two_prompts_different_final_token() -> None:
+    """The README promise: two prompts differing only in their final token
+    expose silent truncation.
+
+    A silent_truncation server derives its embedding only from the first
+    ``max_tokens`` tokens, so two oversized prompts that differ ONLY in their
+    final token come back identical — the differing tail was silently dropped.
+    The SAME two prompts against an honest server must DIFFER, otherwise the
+    two-prompt method would be vacuous: if honestly-different prompts always
+    produced identical vectors it could never surface the truncation.
+    """
+    n = 512 + 64  # above the cliff, so the differing tail is the only distinction
+
+    final_a = "llmprobeFinalA"
+    final_b = "llmprobeFinalB"
+    prompt_a = " ".join(["tok"] * (n - 1) + [final_a])
+    prompt_b = " ".join(["tok"] * (n - 1) + [final_b])
+    assert prompt_a.split()[-1] != prompt_b.split()[-1]
+
+    async def embed(app, prompt: str) -> list[float]:
+        async with _client(app) as client:
+            resp = await client.post(
+                f"{BASE_URL}{EMBEDDINGS}",
+                json={"input": prompt, "model": "embed-mock"},
+            )
+        assert resp.status_code == 200
+        return list(resp.json()["data"][0]["embedding"])
+
+    trunc = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    honest = make_mock_server(max_tokens=512, behavior="honest")
+
+    trunc_a = await embed(trunc, prompt_a)
+    trunc_b = await embed(trunc, prompt_b)
+    honest_a = await embed(honest, prompt_a)
+    honest_b = await embed(honest, prompt_b)
+
+    # Silent truncation discards the differing tail -> the two embeddings are
+    # identical regardless of the different final token.
+    assert trunc_a == trunc_b
+    # Honest parsing preserves the differing tail -> the two embeddings differ,
+    # proving the two-prompt method is a meaningful (non-vacuous) signal.
+    assert honest_a != honest_b
+
+
+def test_golden_silent_truncation_matches_expected_format() -> None:
+    """The committed golden report must stay in the expected capability-card
+    format: a titled markdown table whose data rows carry a provenance marker
+    in the Source column, plus the Findings and Fix sections.
+
+    This guards the README promise that every reported value carries a
+    provenance marker (``read``/``measured``/``inferred``/``unknown``); a row
+    rendered without one breaks that promise and must fail here.
+    """
+    text = (GOLDEN_DIR / "silent-truncation.md").read_text()
+
+    assert text.startswith("# Capability Report — ")
+    assert "| Property | Claimed | Measured | Source | Verdict |" in text
+
+    data_rows = [
+        line
+        for line in text.splitlines()
+        if line.startswith("| ")
+        and "| Property |" not in line
+        and "| --- " not in line
+    ]
+    assert data_rows, "expected at least one table data row"
+
+    row = re.compile(
+        r"^\| .+ \| .+ \| .+ \| "
+        r"(?P<source>read|measured|inferred|unknown) \| .+ \|$"
+    )
+    for data in data_rows:
+        m = row.match(data)
+        assert m, f"table row rendered without a provenance marker: {data!r}"
+
+    assert "## Findings" in text
+    assert "## Fix" in text
+    assert "silent_truncation" in text
