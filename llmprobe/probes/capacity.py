@@ -123,6 +123,28 @@ async def _post_embed(
         return None
 
 
+def _assert_differ_only_in_final_token(a: str, b: str) -> None:
+    """Raise ``ValueError`` if ``a`` and ``b`` do not differ only in the final token.
+
+    The two-prompt method (:func:`_embed_classify`) is only meaningful when the
+    two prompts are otherwise identical, so an identical rather than merely
+    near-identical pair would make the ``silent_truncation`` verdict vacuous.
+    We compare the strings before any request is sent: a malformed pair fails
+    loudly instead of yielding a misleading classification.
+    """
+    if a == b:
+        raise ValueError("embedding probe prompts are identical (no differing tail)")
+    a_tail = a.rsplit(" ", 1)[-1]
+    b_tail = b.rsplit(" ", 1)[-1]
+    a_head = a[: -len(a_tail)] if a_tail else a
+    b_head = b[: -len(b_tail)] if b_tail else b
+    if a_head != b_head:
+        raise ValueError(
+            "embedding probe prompts differ beyond the final token "
+            "(two-prompt silent-truncation check is not valid)"
+        )
+
+
 async def _embed_classify(
     client: httpx.AsyncClient, base_url: str, n: int, requests: list[int]
 ) -> str:
@@ -134,6 +156,7 @@ async def _embed_classify(
     """
     a = _n_token_prompt(n, _FINAL_A)
     b = _n_token_prompt(n, _FINAL_B)
+    _assert_differ_only_in_final_token(a, b)
     requests[0] += 1
     va = await _post_embed(client, base_url, a)
     requests[0] += 1
