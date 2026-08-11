@@ -47,7 +47,7 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
     """
     base = _base(base_url)
 
-    resp = await client.get(f"{base}/props")
+    resp = await client.get(f"{base}/props", timeout=10.0)
     resp.raise_for_status()
     payload = resp.json()
 
@@ -83,7 +83,7 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
 
     # /slots is optional: with --no-slots the server returns 501. Tolerate it.
     try:
-        slots_resp = await client.get(f"{base}/slots")
+        slots_resp = await client.get(f"{base}/slots", timeout=10.0)
         if slots_resp.status_code == 200:
             _source_slot_ctx(slots_resp.json(), merge)
     except httpx.HTTPError:
