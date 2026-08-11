@@ -7,6 +7,15 @@ vLLM (unlike llama.cpp) advertises ``max_model_len`` on ``/v1/models`` and
 serves Prometheus metrics under ``/metrics`` with a ``vllm:`` prefix, which is
 the signal we use for detection. No value is fabricated: fields vLLM does not
 expose are reported as provenance ``unknown``.
+
+Capacity fields: the real bound on concurrent sequences is vLLM's
+``max_num_seqs`` scheduler value, not the KV-cache geometry. Standard vLLM
+builds only expose ``vllm:cache_config_info`` (``block_size``, ``num_gpu_blocks``)
+over HTTP and do not advertise ``max_num_seqs``; when we can read a
+``vllm:max_num_seqs`` metric we derive slots from it and the per-slot context
+from ``max_model_len // max_num_seqs``. When it is unavailable we honestly
+report ``total_slots`` and ``n_ctx_per_slot`` as ``None`` with provenance
+``unknown`` rather than substitute ``block_size`` / ``num_gpu_blocks``.
 """
 
 from __future__ import annotations
@@ -54,23 +63,6 @@ def _metric_lines(metrics_text: str | None) -> list[str]:
     ]
 
 
-def _labels(text: str) -> dict[str, str]:
-    """Parse the ``{key="value",...}`` label block of a metric line."""
-    if "{" not in text or "}" not in text:
-        return {}
-    start = text.index("{")
-    end = text.index("}", start)
-    raw = text[start + 1 : end]
-    labels: dict[str, str] = {}
-    for part in raw.split(","):
-        part = part.strip()
-        if "=" not in part:
-            continue
-        key, _, value = part.partition("=")
-        labels[key.strip()] = value.strip().strip('"')
-    return labels
-
-
 def _to_float(value: str) -> float | None:
     """Best-effort parse of a Prometheus sample value to a float."""
     try:
@@ -92,7 +84,9 @@ def _parse_vllm_metrics(metrics_text: str) -> dict[str, Any]:
     * ``is_vllm`` — True if any metric line carries the ``vllm:`` prefix.
     * ``num_requests_running`` — float value of ``vllm:num_requests_running``
       when present (Prometheus gauges are emitted as floats).
-    * ``cache_config_info`` — labels of ``vllm:cache_config_info`` when present.
+    * ``max_num_seqs`` — int value of ``vllm:max_num_seqs`` when present. This
+      is the scheduler's concurrency bound; the true slot count. It is
+      deliberately distinct from the KV-cache geometry labels.
     """
     lines = _metric_lines(metrics_text)
     if not lines:
@@ -115,50 +109,24 @@ def _parse_vllm_metrics(metrics_text: str) -> dict[str, Any]:
             parsed = _to_float(value)
             if parsed is not None:
                 result["num_requests_running"] = parsed
-        elif name == "cache_config_info":
-            result["cache_config_info"] = _labels(body)
-    _apply_cache_config(result)
+        elif name == "max_num_seqs":
+            parsed = _to_float(value)
+            if parsed is not None:
+                result["max_num_seqs"] = int(parsed)
     return result
 
 
-def _apply_cache_config(result: dict[str, Any]) -> None:
-    """Derive per-slot context and slot count from vLLM's KV cache config.
+def _parse_max_num_seqs(parsed: dict[str, Any]) -> int | None:
+    """Return the scheduler concurrency bound, or ``None`` when unavailable.
 
-    vLLM does not advertise a fixed "number of slots" over its HTTP API, but its
-    ``vllm:cache_config_info`` metric exposes the KV-cache geometry: the number
-    of GPU blocks (``num_gpu_blocks``) and the tokens per block
-    (``block_size``). Each KV block is an allocatable unit — the deterministic
-    scheduler cannot run more concurrent sequences than it has blocks, and every
-    reserved block holds ``block_size`` tokens of KV context. We therefore
-    estimate:
-
-    * ``total_slots`` — number of schedulable slots ≈ ``num_gpu_blocks``.
-    * ``n_ctx_per_slot`` — context reservable per slot ≈ ``block_size``.
-
-    These are approximations derived from what the server reported, so their
-    provenance is ``inferred``. When the metric is absent or the labels cannot
-    be parsed to integers we fall back to a default of ``0`` (still not
-    ``unknown``) so downstream rendering never shows an empty marker.
+    Only a positive integer ``vllm:max_num_seqs`` sample is honoured. Anything
+    else (absent metric, non-finite, zero) yields ``None`` so the caller can
+    fall back to an honest ``unknown`` instead of a bogus estimate.
     """
-    labels = result.get("cache_config_info") or {}
-    slots = _label_int(labels, "num_gpu_blocks")
-    block_size = _label_int(labels, "block_size")
-
-    if slots is not None:
-        result["total_slots"] = slots
-    if block_size is not None:
-        result["n_ctx_per_slot"] = block_size
-
-
-def _label_int(labels: dict[str, str], key: str) -> int | None:
-    """Parse an integer metric label, returning ``None`` when absent/invalid."""
-    raw = labels.get(key)
-    if raw is None:
+    raw = parsed.get("max_num_seqs")
+    if not isinstance(raw, int) or raw <= 0:
         return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+    return raw
 
 
 async def detect(client: httpx.AsyncClient, base_url: str) -> float:
@@ -187,14 +155,19 @@ async def read_config(
 
     * ``GET /v1/models`` — ``data[0].max_model_len`` becomes ``n_ctx_total``
       with provenance ``read`` (vLLM exposes this; llama.cpp does not).
-    * ``GET /metrics`` — parse ``vllm:num_requests_running`` and
-      ``vllm:cache_config_info`` labels when present (best effort).
+    * ``GET /metrics`` — parse ``vllm:num_requests_running`` and the optional
+      ``vllm:max_num_seqs`` scheduler bound when present (best effort).
 
     vLLM does not expose batch sizes over its HTTP API, so ``n_batch`` and
-    ``n_ubatch`` stay ``None`` with provenance ``unknown``. ``total_slots`` and
-    ``n_ctx_per_slot`` are derived from the reported KV-cache geometry
-    (``num_gpu_blocks`` and ``block_size``) with provenance ``inferred``; when
-    that metric is absent they default to ``0`` so they never render ``unknown``.
+    ``n_ubatch`` stay ``None`` with provenance ``unknown``.
+
+    ``total_slots`` and ``n_ctx_per_slot`` are derived from the scheduler's
+    concurrency bound ``max_num_seqs``: when it is readable over HTTP,
+    ``total_slots = max_num_seqs`` and ``n_ctx_per_slot = max_model_len //
+    max_num_seqs`` (provenance ``inferred``). Standard vLLM builds do not expose
+    ``max_num_seqs`` over HTTP, in which case both fields are reported as
+    ``None`` with provenance ``unknown`` — ``block_size``/``num_gpu_blocks``
+    (KV-cache geometry) are never substituted for them.
     """
     models_resp = await client.get(f"{base_url}/v1/models")
     try:
@@ -211,10 +184,10 @@ async def read_config(
         "n_ctx_total": (
             Provenance.READ if max_model_len is not None else Provenance.UNKNOWN
         ),
-        "n_ctx_per_slot": Provenance.INFERRED,
+        "n_ctx_per_slot": Provenance.UNKNOWN,
         "n_batch": Provenance.UNKNOWN,
         "n_ubatch": Provenance.UNKNOWN,
-        "total_slots": Provenance.INFERRED,
+        "total_slots": Provenance.UNKNOWN,
     }
 
     metrics_text = ""
@@ -226,8 +199,14 @@ async def read_config(
         metrics_text = ""
     parsed = _parse_vllm_metrics(metrics_text)
 
-    n_ctx_per_slot = parsed.get("n_ctx_per_slot", 0)
-    total_slots = parsed.get("total_slots", 0)
+    max_num_seqs = _parse_max_num_seqs(parsed)
+    n_ctx_per_slot: int | None = None
+    total_slots: int | None = None
+    if max_num_seqs is not None and max_model_len is not None:
+        total_slots = max_num_seqs
+        n_ctx_per_slot = max_model_len // max_num_seqs
+        sources["total_slots"] = Provenance.INFERRED
+        sources["n_ctx_per_slot"] = Provenance.INFERRED
 
     return EffectiveConfig(
         backend=Backend.VLLM,

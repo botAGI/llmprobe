@@ -295,10 +295,11 @@ def test_extract_prompt_tokens_none_when_not_int() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_config_derives_slots_from_cache_config() -> None:
-    # The cache_config_info metric exposes the KV-cache geometry
-    # (num_gpu_blocks=6400, block_size=16); total_slots and n_ctx_per_slot must
-    # be derived from it rather than left unknown.
+async def test_read_config_slots_unknown_on_cache_config_only() -> None:
+    # A standard vLLM /metrics dump exposes only KV-cache geometry
+    # (num_gpu_blocks=6400, block_size=16) and no max_num_seqs scheduler value.
+    # The slot count and per-slot context must therefore be honestly unknown,
+    # NOT derived from the block geometry.
     models = _fixture_text("vllm_models.json")
     metrics = _fixture_text("vllm_metrics_live.txt")
     client = _client(
@@ -312,16 +313,16 @@ async def test_read_config_derives_slots_from_cache_config() -> None:
     finally:
         await client.aclose()
 
-    assert config.total_slots == 6400
-    assert config.n_ctx_per_slot == 16
-    assert config.sources["total_slots"] == Provenance.INFERRED
-    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+    assert config.total_slots is None
+    assert config.n_ctx_per_slot is None
+    assert config.sources["total_slots"] == Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] == Provenance.UNKNOWN
 
 
 @pytest.mark.asyncio
-async def test_read_config_slots_default_zero_when_no_cache_config() -> None:
-    # When the metrics carry no cache_config_info label we still report a
-    # default of 0 with inferred provenance rather than an unknown marker.
+async def test_read_config_slots_unknown_when_no_max_num_seqs() -> None:
+    # When the metrics carry no max_num_seqs scheduler value, both capacity
+    # fields are unknown — never a fabricated KV-cache geometry guess.
     models = _fixture_text("vllm_models.json")
     metrics = "\n".join(
         [
@@ -341,17 +342,16 @@ async def test_read_config_slots_default_zero_when_no_cache_config() -> None:
     finally:
         await client.aclose()
 
-    assert config.total_slots == 0
-    assert config.n_ctx_per_slot == 0
-    assert config.sources["total_slots"] == Provenance.INFERRED
-    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+    assert config.total_slots is None
+    assert config.n_ctx_per_slot is None
+    assert config.sources["total_slots"] == Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] == Provenance.UNKNOWN
 
 
 @pytest.mark.asyncio
-async def test_read_config_computes_slots_from_recorded_fixtures() -> None:
-    # The capacity-card fields 'slots' (total_slots) and 'context per slot'
-    # (n_ctx_per_slot) must be derived from the recorded vllm_metrics.txt
-    # fixture's cache_config_info labels, and must never render as unknown.
+async def test_read_config_slots_unknown_on_recorded_fixtures() -> None:
+    # The recorded fixtures advertise KV-cache geometry but no scheduler
+    # max_num_seqs value; slots/per-slot context must be honestly unknown.
     models = _fixture_text("vllm_models.json")
     metrics = _fixture_text("vllm_metrics.txt")
     client = _client(
@@ -366,25 +366,28 @@ async def test_read_config_computes_slots_from_recorded_fixtures() -> None:
         await client.aclose()
 
     assert config.backend == Backend.VLLM
-    # vllm_metrics.txt declares num_gpu_blocks="4096", block_size="16".
-    assert config.total_slots == 4096
-    assert config.n_ctx_per_slot == 16
-    assert config.sources["total_slots"] == Provenance.INFERRED
-    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
-    assert config.total_slots != 0
-    assert config.n_ctx_per_slot != 0
-    assert config.sources["total_slots"] != Provenance.UNKNOWN
-    assert config.sources["n_ctx_per_slot"] != Provenance.UNKNOWN
+    assert config.total_slots is None
+    assert config.n_ctx_per_slot is None
+    assert config.sources["total_slots"] == Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] == Provenance.UNKNOWN
 
 
 @pytest.mark.asyncio
-async def test_read_config_slots_fields_not_unknown_on_recorded_fixtures() -> None:
-    # Regression guard: processing the recorded fixtures must never leave the
-    # capability-card 'slots' / 'context per slot' fields as unknown. The two
-    # fixtures together (models + metrics) carry everything needed to derive
-    # both slots and per-slot context.
+async def test_read_config_slots_from_max_num_seqs_when_present() -> None:
+    # When the scheduler concurrency bound max_num_seqs IS exposed over HTTP,
+    # it drives both capacity fields: total_slots = max_num_seqs and
+    # n_ctx_per_slot = max_model_len // max_num_seqs.
     models = _fixture_text("vllm_models.json")
-    metrics = _fixture_text("vllm_metrics.txt")
+    metrics = "\n".join(
+        [
+            "# HELP vllm:num_requests_running Requests currently running.",
+            "# TYPE vllm:num_requests_running gauge",
+            "vllm:num_requests_running 3.0",
+            "# HELP vllm:max_num_seqs Maximum number of concurrent sequences.",
+            "# TYPE vllm:max_num_seqs gauge",
+            "vllm:max_num_seqs 64.0",
+        ]
+    )
     client = _client(
         {
             "/v1/models": (200, models),
@@ -396,14 +399,14 @@ async def test_read_config_slots_fields_not_unknown_on_recorded_fixtures() -> No
     finally:
         await client.aclose()
 
-    assert config.total_slots is not None
-    assert config.n_ctx_per_slot is not None
-    assert config.sources["total_slots"] != Provenance.UNKNOWN
-    assert config.sources["n_ctx_per_slot"] != Provenance.UNKNOWN
+    assert config.total_slots == 64
+    assert config.n_ctx_per_slot == 8192 // 64
+    assert config.sources["total_slots"] == Provenance.INFERRED
+    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
 
 
 @pytest.mark.asyncio
-async def test_read_config_slots_default_zero_when_metrics_empty() -> None:
+async def test_read_config_slots_unknown_when_metrics_empty() -> None:
     models = _fixture_text("vllm_models.json")
     client = _client(
         {
@@ -416,10 +419,39 @@ async def test_read_config_slots_default_zero_when_metrics_empty() -> None:
     finally:
         await client.aclose()
 
-    assert config.total_slots == 0
-    assert config.n_ctx_per_slot == 0
-    assert config.sources["total_slots"] == Provenance.INFERRED
-    assert config.sources["n_ctx_per_slot"] == Provenance.INFERRED
+    assert config.total_slots is None
+    assert config.n_ctx_per_slot is None
+    assert config.sources["total_slots"] == Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] == Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_read_config_regression_kv_geometry_not_used_for_slots() -> None:
+    # Regression for lp-7ah: a real vLLM capacity card with
+    # block_size=4, num_gpu_blocks=19615 and max_model_len=1048576. The adapter
+    # must NOT report slots=19615 (num_gpu_blocks) or context per slot=4
+    # (block_size) — those are KV-cache parameters, not sequence slots. Without
+    # a max_num_seqs scheduler value both fields must be honestly unknown.
+    models = _fixture_text("vllm_models_huge.json")
+    metrics = _fixture_text("vllm_metrics_bugfix.txt")
+    client = _client(
+        {
+            "/v1/models": (200, models),
+            "/metrics": (200, metrics),
+        }
+    )
+    try:
+        config = await read_config(client, BASE_URL)
+    finally:
+        await client.aclose()
+
+    assert config.n_ctx_total == 1048576
+    assert config.total_slots != 19615
+    assert config.n_ctx_per_slot != 4
+    assert config.total_slots is None
+    assert config.n_ctx_per_slot is None
+    assert config.sources["total_slots"] == Provenance.UNKNOWN
+    assert config.sources["n_ctx_per_slot"] == Provenance.UNKNOWN
 
 
 @pytest.mark.asyncio

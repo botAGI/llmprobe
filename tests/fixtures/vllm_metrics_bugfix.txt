@@ -1,0 +1,6 @@
+# HELP vllm:num_requests_running The number of requests currently running.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running 2.0
+# HELP vllm:cache_config_info Information about the KV cache configuration.
+# TYPE vllm:cache_config_info gauge
+vllm:cache_config_info{block_size="4",cache_dtype="auto",gpu_memory_utilization="0.9",num_gpu_blocks="19615",num_cpu_blocks="128",swap_space_bytes="4294967296"} 1.0
