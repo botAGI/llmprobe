@@ -40,13 +40,16 @@ Exit codes: `0` clean, `1` advertised capacity does not match measured, `2` erro
 That makes it usable as a CI gate, not just a one-off report.
 
 Inference is off by default: llmprobe reads configuration only. This is the
-`safe` mode. `--probe` is the only flag that enables inference traffic;
+`safe` mode. `--probe` sends inference traffic to find the real capacity cliff;
 `--safe` is the default state of the `--probe/--safe` pair, so you never need
-to pass it explicitly. `--endpoint` selects which endpoint the capacity probe
-exercises (`embeddings`, `chat`, or `auto`, the default that resolves per
-backend). Every HTTP request carries a per-request timeout (default 10s,
-overridable with `--timeout`) so an unresponsive server fails fast instead of
-hanging the process.
+to pass it explicitly. Selecting an explicit endpoint with `--endpoint choice`
+(`chat` or `embeddings`) also enables inference on that endpoint, even without
+`--probe` — naming the endpoint you want to measure implies you want it probed.
+Only the default `auto` selection respects `--safe` suppression. `--endpoint`
+chooses which endpoint the capacity probe exercises (`embeddings`, `chat`, or
+`auto`, the default that resolves per backend). Every HTTP request carries a
+per-request timeout (default 10s, overridable with `--timeout`) so an
+unresponsive server fails fast instead of hanging the process.
 
 ## Quick start
 

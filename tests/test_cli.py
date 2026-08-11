@@ -317,6 +317,27 @@ def test_endpoint_chat_resolves_to_chat_completions() -> None:
         )
 
 
+def test_explicit_endpoint_sends_probe_traffic_without_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selecting ``--endpoint chat`` enables inference even without ``--probe``.
+
+    Naming an explicit endpoint (CHAT/EMBEDDINGS) is an instruction to probe
+    that endpoint, so probe traffic is sent despite the ``--safe`` default.
+    Only the default ``auto`` selection respects ``--safe`` suppression (see
+    ``test_safe_is_the_default``).
+    """
+    server = make_mock_server(max_tokens=512, behavior="honest")
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--endpoint", "chat", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    report = json.loads(result.stdout)
+    assert report["capacity"] != []
+    assert report["capacity"][0]["endpoint"]["value"] == "/v1/chat/completions"
+
+
 def test_endpoint_chat_drives_the_chat_capacity_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
