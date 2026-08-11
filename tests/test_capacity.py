@@ -370,3 +370,32 @@ def test_golden_silent_truncation_matches_expected_format() -> None:
     assert "## Findings" in text
     assert "## Fix" in text
     assert "silent_truncation" in text
+
+
+@pytest.mark.asyncio
+async def test_unreachable_server_raises_http_error() -> None:
+    """An unreachable server must surface as an ``httpx.HTTPError``, never a
+    fabricated ``hard_error`` verdict.
+
+    README promises: a transport failure is reported to stderr and the process
+    exits ``2`` (see cli.py, which turns ``httpx.HTTPError`` into exit code 2).
+    That promise only holds if the capacity probe does not swallow a transport
+    failure into a ``hard_error`` classification. Here the transport drops every
+    request (unreachable host), so ``probe_capacity`` must propagate the error
+    for the caller to exit ``2`` — it must not pretend to have measured a cliff.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url=BASE_URL
+    ) as client:
+        with pytest.raises(httpx.HTTPError):
+            await probe_capacity(
+                client,
+                BASE_URL,
+                EMBEDDINGS,
+                ceiling=32768,
+                backend=Backend.LLAMACPP,
+            )
