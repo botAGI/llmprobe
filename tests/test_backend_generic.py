@@ -152,3 +152,51 @@ async def test_every_numeric_field_has_provenance_entry() -> None:
     for field in NUMERIC_FIELDS:
         assert field in config.sources
         assert isinstance(config.sources[field], Provenance)
+
+
+@pytest.mark.asyncio
+async def test_read_config_http_error_finding_does_not_leak_url_credentials() -> None:
+    """A non-200 response must not leak URL-embedded API keys into the message.
+
+    The base URL may carry a secret in its userinfo slot
+    (``http://sk-SECRET@host/v1``). When the server rejects the request the
+    HTTP-error finding message must not echo that credential into the card or
+    logs — a security promise of this backend.
+    """
+    secret = "sk-URL-SUPERSECRET-777"
+    url = f"http://{secret}@host:8080"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config, findings = await read_config(client, url)
+    finally:
+        await client.aclose()
+    assert config.backend == Backend.GENERIC
+    assert len(findings) == 1
+    assert findings[0].code == MODELS_HTTP_ERROR_CODE
+    assert secret not in findings[0].message
+    assert "http://host:8080/v1/models" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_read_config_unreachable_finding_does_not_leak_url_credentials() -> None:
+    """An unreachable server must not leak URL-embedded API keys into the message."""
+    secret = "sk-URL-SUPERSECRET-777"
+    url = f"http://{secret}@host:8080"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config, findings = await read_config(client, url)
+    finally:
+        await client.aclose()
+    assert config.backend == Backend.GENERIC
+    assert len(findings) == 1
+    assert findings[0].code == MODELS_UNREACHABLE_CODE
+    assert secret not in findings[0].message
+    assert "http://host:8080/v1/models" in findings[0].message

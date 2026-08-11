@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from llmprobe.models import (
     CliffBehavior,
     ProbeReport,
     Provenance,
+    redact_userinfo,
 )
 
 _HEADER_ROW = "| Property | Claimed | Measured | Source | Verdict |"
@@ -185,15 +185,7 @@ def _sanitize_base_url(url: str) -> str:
     report is pasted into issues and logs, so the credentials must not leak.
     URLs without userinfo are returned unchanged.
     """
-    parts = urlsplit(url if "://" in url else f"//{url}")
-    if not (parts.username or parts.password):
-        return url
-    hostname = parts.hostname or ""
-    port = f":{parts.port}" if parts.port else ""
-    cleaned = urlunsplit(
-        (parts.scheme, f"{hostname}{port}", parts.path, parts.query, parts.fragment)
-    )
-    return cleaned if cleaned else url
+    return redact_userinfo(url)
 
 
 def _config_numeric_row(
