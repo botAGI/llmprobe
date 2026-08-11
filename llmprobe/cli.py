@@ -161,7 +161,10 @@ async def probe(
 ) -> ProbeReport:
     """Run the configured read and optional capacity probe, then assemble a report."""
     async with _make_client(base_url, api_key, timeout) as client:
-        await _assert_reachable(client)
+        try:
+            await _assert_reachable(client)
+        except httpx.HTTPError:
+            raise
         config, findings = await read_effective_config(
             client, base_url, claimed_ctx, timeout
         )
