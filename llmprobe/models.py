@@ -20,6 +20,14 @@ class Backend(str, Enum):
     GENERIC = "generic"
 
 
+class Endpoint(str, Enum):
+    """Which inference endpoint a capacity probe should exercise."""
+
+    EMBEDDINGS = "embeddings"
+    CHAT = "chat"
+    AUTO = "auto"
+
+
 class Provenance(str, Enum):
     """How a reported value was obtained.
 

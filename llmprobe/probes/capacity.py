@@ -24,8 +24,15 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
 from llmprobe.backends.vllm import extract_prompt_tokens
-from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
+from llmprobe.models import (
+    Backend,
+    CapacityResult,
+    CliffBehavior,
+    Endpoint,
+    Provenance,
+)
 from llmprobe.tokens import MAX_ATTEMPTS, _tokenize
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,23 @@ _FILLER = "tok"
 _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
 _CANARY = "llmprobeCanary"
+
+
+def _resolve_probe_path(endpoint: Endpoint, backend: Backend) -> str:
+    """Map an ``Endpoint`` selection onto the concrete probe path to exercise.
+
+    ``AUTO`` resolves against the detected ``backend`` to the backend's default
+    probe endpoint so the path actually probed matches the backend type rather
+    than always defaulting to embeddings. Explicit ``CHAT`` / ``EMBEDDINGS``
+    choices are honoured directly and never overridden.
+    """
+    if endpoint is Endpoint.CHAT:
+        return "/v1/chat/completions"
+    if endpoint is Endpoint.EMBEDDINGS:
+        return "/v1/embeddings"
+    if endpoint is Endpoint.AUTO:
+        return DEFAULT_PROBE_ENDPOINTS[backend]
+    raise ValueError(f"unknown endpoint: {endpoint!r}")
 
 
 async def _n_token_prompt(
@@ -215,11 +239,12 @@ async def _embed_classify(
 async def _chat_classify(
     client: httpx.AsyncClient,
     base_url: str,
+    path: str,
     n: int,
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> str:
-    """Classify length ``n`` against ``/v1/chat/completions`` via a head canary.
+    """Classify length ``n`` against the configured chat path via a head canary.
 
     A unique canary is planted at the very start of the prompt and the model is
     asked to repeat the first word. If the canary is absent from the reply the
@@ -237,7 +262,7 @@ async def _chat_classify(
     body = f"{_CANARY} " + tail
     requests[0] += 1
     resp = await client.post(
-        f"{base}/v1/chat/completions",
+        f"{base}{path}",
         json={
             "model": "chat-mock",
             "messages": [{"role": "user", "content": body}],
@@ -362,7 +387,7 @@ async def _binary_search_chat(
     method used for the embeddings endpoint.
     """
     async def classify(n: int) -> str:
-        return await _chat_classify(client, base_url, n, requests, timeout)
+        return await _chat_classify(client, base_url, endpoint, n, requests, timeout)
 
     return await _binary_search(classify, endpoint, ceiling, exact, requests)
 
@@ -370,26 +395,29 @@ async def _binary_search_chat(
 async def probe_capacity(
     client: httpx.AsyncClient,
     base_url: str,
-    endpoint: str,
+    endpoint: Endpoint,
     ceiling: int = DEFAULT_CEILING,
     backend: Backend = Backend.GENERIC,
     timeout: float | None = None,
 ) -> CapacityResult:
     """Determine the largest accepted input length and how the server fails.
 
-    Dispatches to a per-endpoint binary search: a head-canary search over
-    ``/v1/chat/completions`` and the two-prompt search over
-    ``/v1/embeddings``.
+    Dispatches to a per-endpoint binary search: a head-canary search over the
+    chat path and the two-prompt search over the embeddings path. ``endpoint``
+    selects which request path to exercise; ``AUTO`` resolves against the
+    detected ``backend``. The resolved path is threaded into every request so
+    no hardcoded endpoint path leaks into the probe.
 
-    ``backend`` is accepted for API symmetry; the request shapes we send are
-    stable across the supported backends. ``timeout``, when given, bounds every
-    HTTP request the probe issues (defaulting to the client's configured
-    timeout when omitted).
+    ``backend`` is accepted for API symmetry and for ``AUTO`` resolution; the
+    request shapes we send are stable across the supported backends. ``timeout``,
+    when given, bounds every HTTP request the probe issues (defaulting to the
+    client's configured timeout when omitted).
     """
     per_request = (
         httpx.Timeout(timeout) if timeout is not None else client.timeout
     )
     requests = [0]
+    path = _resolve_probe_path(endpoint, backend)
 
     # Can we verify our prompt lengths against the server's own tokenizer? If
     # not, every reported count is a nominal estimate and token_count_exact must
@@ -398,19 +426,19 @@ async def probe_capacity(
     # we verify against that field instead of /tokenize.
     if backend == Backend.VLLM:
         exact = await _vllm_prompt_tokens_exact(
-            client, base_url, endpoint, per_request
+            client, base_url, path, per_request
         )
     else:
         exact = await _exact_tokenization_available(client, base_url, per_request)
 
-    if endpoint.rstrip("/").endswith("/chat/completions"):
+    if path.rstrip("/").endswith("/chat/completions"):
         return await _binary_search_chat(
-            client, base_url, endpoint, ceiling, exact, requests, per_request
+            client, base_url, path, ceiling, exact, requests, per_request
         )
 
     async def classify(n: int) -> str:
         return await _embed_classify(
-            client, base_url, endpoint, n, requests, per_request
+            client, base_url, path, n, requests, per_request
         )
 
-    return await _binary_search(classify, endpoint, ceiling, exact, requests)
+    return await _binary_search(classify, path, ceiling, exact, requests)
