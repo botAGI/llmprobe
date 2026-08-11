@@ -41,15 +41,23 @@ def _approximate(n: int) -> str:
 
 
 async def _tokenize(
-    client: httpx.AsyncClient, base_url: str, prompt: str
+    client: httpx.AsyncClient,
+    base_url: str,
+    prompt: str,
+    timeout: httpx.Timeout | None = None,
 ) -> int | None:
     """Return the server-reported token count for ``prompt``.
 
     Returns ``None`` when the endpoint is absent (404) or unreadable — we do
-    not fabricate a count.
+    not fabricate a count. ``timeout`` is threaded through to bound the request;
+    when omitted the client's own configured timeout applies.
     """
     try:
-        resp = await client.post(f"{_base(base_url)}/tokenize", json={"content": prompt})
+        resp = await client.post(
+            f"{_base(base_url)}/tokenize",
+            json={"content": prompt},
+            timeout=timeout,
+        )
     except httpx.HTTPError:
         return None
     if resp.status_code != 200:

@@ -59,7 +59,9 @@ def _n_token_prompt(n: int, final: str) -> str:
     return " ".join([_FILLER] * (n - 1) + [final])
 
 
-async def _exact_tokenization_available(client: httpx.AsyncClient, base_url: str) -> bool:
+async def _exact_tokenization_available(
+    client: httpx.AsyncClient, base_url: str, timeout: httpx.Timeout
+) -> bool:
     """Return ``True`` when we can trust ``_n_token_prompt`` counts as exact.
 
     The prompts built by :func:`_n_token_prompt` are exactly ``n`` tokens only
@@ -69,12 +71,14 @@ async def _exact_tokenization_available(client: httpx.AsyncClient, base_url: str
     nominal estimate, for which we must report ``exact=False``.
     """
     probe = " ".join([_FILLER, _FINAL_A, _FINAL_B, _CANARY])
-    count = await _tokenize(client, base_url.rstrip("/"), probe)
+    count = await _tokenize(
+        client, base_url.rstrip("/"), probe, timeout=timeout
+    )
     return count == 4
 
 
 async def _vllm_prompt_tokens_exact(
-    client: httpx.AsyncClient, base_url: str, endpoint: str
+    client: httpx.AsyncClient, base_url: str, endpoint: str, timeout: httpx.Timeout
 ) -> bool:
     """For vLLM, verify a probe length against the server's own count.
 
@@ -88,7 +92,9 @@ async def _vllm_prompt_tokens_exact(
     base = base_url.rstrip("/")
     body: dict = {"input": " ".join([_FILLER] * n), "model": "vllm-probe"}
     try:
-        resp = await client.post(f"{base}{endpoint}", json=body)
+        resp = await client.post(
+            f"{base}{endpoint}", json=body, timeout=timeout
+        )
     except httpx.HTTPError:
         return False
     if resp.status_code != 200:
@@ -111,13 +117,15 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 async def _post_embed(
-    client: httpx.AsyncClient, base_url: str, prompt: str
+    client: httpx.AsyncClient, base_url: str, prompt: str, timeout: httpx.Timeout
 ) -> list[float] | None:
     """POST one embedding; return the vector on 200 else ``None``."""
     base = base_url.rstrip("/")
     try:
         resp = await client.post(
-            f"{base}/v1/embeddings", json={"input": prompt, "model": "embed-mock"}
+            f"{base}/v1/embeddings",
+            json={"input": prompt, "model": "embed-mock"},
+            timeout=timeout,
         )
     except httpx.HTTPError:
         return None
@@ -156,7 +164,11 @@ def _assert_differ_only_in_final_token(a: str, b: str) -> None:
 
 
 async def _embed_classify(
-    client: httpx.AsyncClient, base_url: str, n: int, requests: list[int]
+    client: httpx.AsyncClient,
+    base_url: str,
+    n: int,
+    requests: list[int],
+    timeout: httpx.Timeout,
 ) -> str:
     """Classify length ``n`` against ``/v1/embeddings``.
 
@@ -168,9 +180,9 @@ async def _embed_classify(
     b = _n_token_prompt(n, _FINAL_B)
     _assert_differ_only_in_final_token(a, b)
     requests[0] += 1
-    va = await _post_embed(client, base_url, a)
+    va = await _post_embed(client, base_url, a, timeout)
     requests[0] += 1
-    vb = await _post_embed(client, base_url, b)
+    vb = await _post_embed(client, base_url, b, timeout)
     if va is None or vb is None:
         return "hard_error"
     if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
@@ -185,7 +197,11 @@ async def _embed_classify(
 
 
 async def _chat_classify(
-    client: httpx.AsyncClient, base_url: str, n: int, requests: list[int]
+    client: httpx.AsyncClient,
+    base_url: str,
+    n: int,
+    requests: list[int],
+    timeout: httpx.Timeout,
 ) -> str:
     """Classify length ``n`` against ``/v1/chat/completions`` via a head canary.
 
@@ -208,6 +224,7 @@ async def _chat_classify(
                 "model": "chat-mock",
                 "messages": [{"role": "user", "content": body}],
             },
+            timeout=timeout,
         )
     except httpx.HTTPError:
         return "hard_error"
@@ -320,6 +337,7 @@ async def _binary_search_chat(
     ceiling: int,
     exact: bool,
     requests: list[int],
+    timeout: httpx.Timeout,
 ) -> CapacityResult:
     """Binary-search the ``/v1/chat/completions`` cliff.
 
@@ -328,7 +346,7 @@ async def _binary_search_chat(
     method used for the embeddings endpoint.
     """
     async def classify(n: int) -> str:
-        return await _chat_classify(client, base_url, n, requests)
+        return await _chat_classify(client, base_url, n, requests, timeout)
 
     return await _binary_search(classify, endpoint, ceiling, exact, requests)
 
@@ -339,6 +357,7 @@ async def probe_capacity(
     endpoint: str,
     ceiling: int = DEFAULT_CEILING,
     backend: Backend = Backend.GENERIC,
+    timeout: float | None = None,
 ) -> CapacityResult:
     """Determine the largest accepted input length and how the server fails.
 
@@ -347,8 +366,13 @@ async def probe_capacity(
     ``/v1/embeddings``.
 
     ``backend`` is accepted for API symmetry; the request shapes we send are
-    stable across the supported backends.
+    stable across the supported backends. ``timeout``, when given, bounds every
+    HTTP request the probe issues (defaulting to the client's configured
+    timeout when omitted).
     """
+    per_request = (
+        httpx.Timeout(timeout) if timeout is not None else client.timeout
+    )
     requests = [0]
 
     # Can we verify our prompt lengths against the server's own tokenizer? If
@@ -357,16 +381,18 @@ async def probe_capacity(
     # the exception: it reports its own exact count via usage.prompt_tokens, so
     # we verify against that field instead of /tokenize.
     if backend == Backend.VLLM:
-        exact = await _vllm_prompt_tokens_exact(client, base_url, endpoint)
+        exact = await _vllm_prompt_tokens_exact(
+            client, base_url, endpoint, per_request
+        )
     else:
-        exact = await _exact_tokenization_available(client, base_url)
+        exact = await _exact_tokenization_available(client, base_url, per_request)
 
     if endpoint.rstrip("/").endswith("/chat/completions"):
         return await _binary_search_chat(
-            client, base_url, endpoint, ceiling, exact, requests
+            client, base_url, endpoint, ceiling, exact, requests, per_request
         )
 
     async def classify(n: int) -> str:
-        return await _embed_classify(client, base_url, n, requests)
+        return await _embed_classify(client, base_url, n, requests, per_request)
 
     return await _binary_search(classify, endpoint, ceiling, exact, requests)

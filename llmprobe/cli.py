@@ -185,6 +185,7 @@ async def probe(
                 _resolve_path(endpoint, config.backend),
                 ceiling=DEFAULT_CEILING,
                 backend=config.backend,
+                timeout=timeout,
             )
             capacity.append(cap)
             # Compare --claimed-ctx against the measured max_accepted_tokens;
