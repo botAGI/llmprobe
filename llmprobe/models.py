@@ -99,8 +99,10 @@ class CapacityResult(BaseModel):
 
     ``max_accepted_tokens`` carries its own provenance because a binary search
     that rejects every probed length (real capacity below :data:`LO`) cannot
-    report an accepted length; the caller must be able to see that the integer
-    is a lower-bound estimate rather than a measured observation.
+    report an accepted length, and one that accepts the ceiling cannot know the
+    true maximum (it lies above ``ceiling``); in both cases the caller must be
+    able to see that the integer is a lower-bound estimate rather than a
+    measured observation.
 
     ``token_count_exact`` records whether the probed lengths were verified to
     be exactly ``max_accepted_tokens`` tokens via a live ``/tokenize`` endpoint.
