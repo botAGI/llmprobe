@@ -9,29 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Детектор тихого усечения** — определяет, когда задняя часть запроса
-  молча отбрасывается сервером, вместо того чтобы отчитаться о ней.
-- **Адаптеры llama.cpp/vLLM/Ollama/generic** — поддержка нескольких бэкендов
-  через общий интерфейс с запасным вариантом для систем, совместимых с OpenAI.
-- **Карточка возможностей с маркерами происхождения** — каждый отчёт
-  сопровождается маркером (`read`, `measured`, `inferred`, `unknown`),
-  показывающим, откуда взялось значение.
-- **Коды возврата 0/1/2** — явные коды завершения для успеха, ошибки и
-  неопределённого результата, чтобы вызывающие скрипты могли различать исход.
+- **Silent truncation detector** — detects when the tail of a request is silently
+  discarded by the server instead of being reported back to the caller.
+- **llama.cpp/vLLM/Ollama/generic adapters** — support for multiple backends
+  through a shared interface, with a fallback for OpenAI-compatible systems.
+- **Capability card with provenance markers** — every report carries a marker
+  (`read`, `measured`, `inferred`, `unknown`) showing where a value came from.
+- **Exit codes 0/1/2** — explicit completion codes for success, error, and
+  undetermined results, so calling scripts can tell the outcomes apart.
 
-### Известные ограничения
+### Known limitations
 
-- **Живая проверка только против vLLM.** Поведение адаптеров проверялось
-  «вживую» только против реального сервера vLLM (записанный слепок ответов —
+- **Live verification only against vLLM.** Adapter behavior was verified "live"
+  only against a real vLLM server (recorded snapshot of responses —
   `tests/fixtures/vllm_metrics_live.txt`).
-- **llama.cpp и Ollama покрыты моками.** Адаптеры `llamacpp` и `ollama`
-  протестированы только через `httpx.MockTransport` с записанными фикстурами
-  (`tests/fixtures/llamacpp_props.json`, `tests/fixtures/ollama_*.json`).
-  Они ещё не проверялись против реального сервера, поэтому их фактическое
-  поведение может отличаться от заявленного.
+- **llama.cpp and Ollama are covered by mocks.** The `llamacpp` and `ollama`
+  adapters have only been tested through `httpx.MockTransport` with recorded
+  fixtures (`tests/fixtures/llamacpp_props.json`,
+  `tests/fixtures/ollama_*.json`). They have not yet been checked against a real
+  server, so their actual behavior may differ from what is claimed.
 
 ## [Unreleased]
 
 ### Added
 
-- Начальная подготовка релиза — настройка публикации и инфраструктуры выпуска.
+- Initial release preparation — publishing setup and release infrastructure.
