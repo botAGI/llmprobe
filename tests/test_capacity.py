@@ -267,6 +267,34 @@ async def test_silent_truncation_two_prompts_different_final_token() -> None:
     assert honest_a != honest_b
 
 
+@pytest.mark.asyncio
+async def test_binary_search_probe_request_count_is_logarithmic() -> None:
+    """The capacity probe MUST binary-search over input length, not scan
+    linearly: it must locate a cliff deep inside ``[LO, ceiling]`` in a number
+    of probe requests that scales with ``log2(ceiling)``, not with the cliff
+    position.
+
+    README promises "binary search to the actual cliff, per endpoint". A linear
+    scan from ``LO`` would cost O(cliff) requests; a binary probe must cost
+    O(log2(ceiling)). We place the cliff at an awkward, non-power-of-two depth
+    to rule out any luck-of-the-grid pass and assert the probe used a strictly
+    sub-linear number of requests.
+    """
+    cliff = 5003
+    server = make_mock_server(max_tokens=cliff, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_tokens == cliff
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+    # Binary search over [16, 32768] needs ~15 classifications plus the
+    # ceiling pre-probe and the post-cliff confirmation. Linear scanning from
+    # LO would need (5003 - 16) * 2 = ~9974 requests. Anything far below that
+    # proves logarithmic (binary), not linear, probing.
+    assert result.probe_requests_used < 100
+
+
 def test_golden_silent_truncation_matches_expected_format() -> None:
     """The committed golden report must stay in the expected capability-card
     format: a titled markdown table whose data rows carry a provenance marker
