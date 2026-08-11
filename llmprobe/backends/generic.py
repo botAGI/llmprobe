@@ -18,7 +18,14 @@ from __future__ import annotations
 
 import httpx
 
-from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance, Severity
+from llmprobe.models import (
+    Backend,
+    EffectiveConfig,
+    Finding,
+    Provenance,
+    Severity,
+    redact_userinfo,
+)
 
 GENERIC_DETECT_CONFIDENCE = 0.1
 
@@ -52,6 +59,7 @@ async def read_config(
     caller can report exactly why the probe failed.
     """
     base = base_url.rstrip("/")
+    display = redact_userinfo(base)
     model_id = ""
     findings: list[Finding] = []
     try:
@@ -63,7 +71,9 @@ async def read_config(
             Finding(
                 severity=Severity.ERROR,
                 code=MODELS_UNREACHABLE_CODE,
-                message=f"failed to reach {base}/v1/models: {exc}",
+                message=redact_userinfo(
+                    f"failed to reach {display}/v1/models: {exc}"
+                ),
             )
         )
         payload = {}
@@ -75,7 +85,7 @@ async def read_config(
                     code=MODELS_HTTP_ERROR_CODE,
                     advertised=resp.status_code,
                     message=(
-                        f"{base}/v1/models returned HTTP {resp.status_code}"
+                        f"{display}/v1/models returned HTTP {resp.status_code}"
                     ),
                 )
             )
@@ -88,7 +98,7 @@ async def read_config(
                     Finding(
                         severity=Severity.ERROR,
                         code=MODELS_HTTP_ERROR_CODE,
-                        message=f"{base}/v1/models returned invalid JSON",
+                        message=f"{display}/v1/models returned invalid JSON",
                     )
                 )
                 payload = {}

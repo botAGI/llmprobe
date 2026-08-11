@@ -13,8 +13,6 @@ Imports only from :mod:`llmprobe.models`, the probe modules, and
 from __future__ import annotations
 
 import asyncio
-import os
-import re
 from typing import Annotated
 
 import httpx
@@ -34,6 +32,7 @@ from llmprobe.models import (
     Finding,
     ProbeReport,
     Severity,
+    redact_userinfo,
 )
 
 app = typer.Typer(
@@ -49,10 +48,6 @@ _console = Console()
 
 _API_KEY_ENV = "LLMPROBE_API_KEY"
 
-# A base URL may carry its secrets inline (https://user:pass@host). That userinfo
-# block is a credential and must never be echoed into output or logs.
-_USERINFO_RE = re.compile(r"(//[^/@]+@)")
-
 #: Default per-request timeout in seconds (applied to every HTTP request).
 DEFAULT_TIMEOUT = 10.0
 
@@ -64,7 +59,7 @@ def redact_base_url(base_url: str) -> str:
     secret must not reach the card or logs, so the ``userinfo`` segment is
     removed for display while the connection URL is left untouched.
     """
-    return _USERINFO_RE.sub("//", base_url)
+    return redact_userinfo(base_url)
 
 
 def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:

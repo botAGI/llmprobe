@@ -7,8 +7,30 @@ modules. Every reported value carries a provenance marker
 
 from enum import Enum
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
+
+
+def redact_userinfo(url: str) -> str:
+    """Strip ``userinfo`` (credentials) from a URL for display.
+
+    A base URL may carry a secret in its userinfo slot, e.g.
+    ``http://sk-1234@host:8080`` or ``http://user:token@host/v1``. Pasted into
+    issues, JSON, and logs, such credentials must never be printed. This pure
+    string helper removes the ``username:password@`` segment for display while
+    leaving URLs without userinfo untouched. The request URL used on the wire
+    is unaffected — only the human/machine-facing form is redacted.
+    """
+    parts = urlsplit(url if "://" in url else f"//{url}")
+    if not (parts.username or parts.password):
+        return url
+    hostname = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    cleaned = urlunsplit(
+        (parts.scheme, f"{hostname}{port}", parts.path, parts.query, parts.fragment)
+    )
+    return cleaned if cleaned else url
 
 
 class Backend(str, Enum):
