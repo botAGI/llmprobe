@@ -151,8 +151,8 @@ async def _assert_reachable(client: httpx.AsyncClient) -> None:
 async def probe(
     base_url: str,
     claimed_ctx: int | None,
-    do_probe: bool,
-    endpoint: Endpoint,
+    safe: bool = True,
+    endpoint: Endpoint = Endpoint.AUTO,
     timeout: float = DEFAULT_TIMEOUT,
     api_key: str | None = None,
 ) -> ProbeReport:
@@ -165,15 +165,16 @@ async def probe(
         findings.extend(check_slots(config, claimed_ctx))
 
         capacity: list[CapacityResult] = []
-        if do_probe:
-            cap = await probe_capacity(
-                client,
-                base_url,
-                endpoint,
-                ceiling=DEFAULT_CEILING,
-                backend=config.backend,
-                timeout=timeout,
-            )
+        cap = await probe_capacity(
+            client,
+            base_url,
+            endpoint,
+            ceiling=DEFAULT_CEILING,
+            backend=config.backend,
+            timeout=timeout,
+            safe=safe,
+        )
+        if cap is not None:
             capacity.append(cap)
             # Compare --claimed-ctx against the measured max_accepted_tokens;
             # a claimed_ctx mismatch is surfaced as a MISMATCH finding => exit 1.
@@ -267,7 +268,14 @@ def main(
 
     try:
         report = asyncio.run(
-            probe(base_url, claimed_ctx, probe_flag, endpoint, timeout, api_key)
+            probe(
+                base_url,
+                claimed_ctx,
+                safe=not probe_flag,
+                endpoint=endpoint,
+                timeout=timeout,
+                api_key=api_key,
+            )
         )
     except httpx.HTTPError as exc:
         typer.echo(

@@ -436,7 +436,8 @@ async def probe_capacity(
     ceiling: int = DEFAULT_CEILING,
     backend: Backend = Backend.GENERIC,
     timeout: float | None = None,
-) -> CapacityResult:
+    safe: bool = False,
+) -> CapacityResult | None:
     """Determine the largest accepted input length and how the server fails.
 
     Dispatches to a per-endpoint binary search: a two-prompt tail check over
@@ -448,8 +449,12 @@ async def probe_capacity(
     ``backend`` is accepted for API symmetry and for ``AUTO`` resolution; the
     request shapes we send are stable across the supported backends. ``timeout``,
     when given, bounds every HTTP request the probe issues (defaulting to the
-    client's configured timeout when omitted).
+    client's configured timeout when omitted). ``safe``, when True, skips the
+    probe entirely and returns ``None``: the caller then reports no measured
+    capacity rather than a fabricated value.
     """
+    if safe:
+        return None
     per_request = (
         httpx.Timeout(timeout) if timeout is not None else client.timeout
     )
