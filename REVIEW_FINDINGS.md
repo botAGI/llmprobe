@@ -1,13 +1,21 @@
 # Review Findings — llmprobe
 
-Reviewer role. Objective: find defects (code/docstring divergence, unhandled
-branches, tests that bypass the production path, values without provenance)
-rather than write new features. Every finding lists file, line, and a way to
-reproduce. Fixes are limited to what was found, minimal in scope.
+Reviewer role. Objective: find defects rather than write new features. Every
+finding lists file, line, and a way to reproduce. Fixes are limited to what
+was found, minimal in scope.
 
-Scope reviewed: `llmprobe/cli.py`, `llmprobe/models.py`, `llmprobe/tokens.py`,
-`llmprobe/probes/*.py`, plus the adapters in `llmprobe/backends/*.py` that the
-CLI reaches at runtime.
+This review is scoped to one defect family, as assigned: **silent exception
+swallowing** (`except` without logging or with `pass`), **default values that
+mask an error**, and **functions returning `None` instead of an explicit
+failure indicator**. It covers the production path the CLI exercises:
+`llmprobe/probes/*.py`, `llmprobe/backends/*.py`, `llmprobe/tokens.py`. The
+report shows the code being honest about what it could not read rather than
+guessing.
+
+Prior reviews (beads lp-atp, lp-hb8, lp-6ur) on unhandled exceptions,
+provenance of capacity lower bounds, and dead code are resolved on `main`;
+this document supersedes the previous `REVIEW_FINDINGS.md` and reports only
+the findings of the assigned silent-swallowing review.
 
 Regression gate (run before and after any fix):
 
@@ -15,278 +23,199 @@ Regression gate (run before and after any fix):
 python3 -m pytest -q
 ```
 
-Baseline: 84 passed. After the one fix below: 84 passed (no regressions).
-Findings 2-4 were subsequently resolved (see each finding's fix note); the
-full suite currently passes.
+Baseline: 144 passed. After the fixes below: 144 passed (no regressions).
+
 ---
 
 ## Status summary
 
 | # | Severity | Finding | Status |
 |---|----------|---------|--------|
-| 1 | High | Unhandled `JSONDecodeError` in vLLM adapter on malformed `/v1/models` | Fixed |
-| 2 | Medium | Capacity cliff fabricates a never-probed "measured" max when even the minimum probe length is rejected | Fixed |
-| 3 | Medium | `llmprobe/tokens.py` is dead code — never used by the production capacity path | Fixed |
-| 4 | Low | Slot mismatch context check message omits the claimed value that triggered it | Fixed |
-| 5 | Medium | Capacity reports the ceiling as a "measured" max when it is only a lower bound (true max is above ceiling) | Fixed |
+| 1 | Medium | `/slots` read failure swallowed with bare `pass` (no logging) and JSON parse error left unhandled | Fixed |
+| 2 | Medium | Backend `detect` swallow-all (`except Exception`) is silent SAM-visible: any error is masked as "no match" with no trace | Fixed |
+| 3 | Low | Ollama `_get_json`/`_post_json` return `None` for both "no data" and "probe failed", so a failed read is reported as `unknown` config with no error finding | Documented — fix not applied |
 
 ---
 
-## Finding 1 (FIXED) — Unhandled `JSONDecodeError` in vLLM adapter
+## Finding 1 (FIXED) — llama.cpp `/slots` read failure swallowed with bare `pass`
 
-- File: `llmprobe/backends/vllm.py:126-128`
-- Severity: High (unhandled exception in a live run)
+- File: `llmprobe/backends/llamacpp.py` (`read_config`, `/slots` block)
+- Severity: Medium (silent exception swallow)
 
 ### What is wrong
 
-`read_config` calls:
+The optional `/slots` cross-check is the single bare `except ... : pass` in the
+codebase:
 
 ```python
-models_resp = await client.get(f"{base_url}/v1/models")
-models_resp.raise_for_status()
-models = models_resp.json()
-```
-
-When the server answers `GET /v1/models` with HTTP 200 but a non-JSON body,
-`models_resp.json()` raises `json.JSONDecodeError`. This is not an
-`httpx.HTTPError`, so `cli.py:205` (`except httpx.HTTPError`) does not catch it
-and the CLI crashes with a raw traceback instead of the graceful exit-2 path.
-
-Detection can select the vLLM adapter (via `/metrics`) even when the
-`/v1/models` payload is malformed, so this branch is reachable in a live run.
-
-### How to reproduce
-
-1. Stand up a server that serves `vllm:`-prefixed Prometheus metrics on
-   `/metrics` (so the vLLM adapter is selected) but returns `200` with a
-   non-JSON body on `/v1/models`.
-2. Run `llmprobe --probe <base_url>`.
-3. A raw `JSONDecodeError` traceback is printed; no report is produced.
-
-Confirmed with a `httpx.MockTransport` harness routing `/metrics` to
-`vllm:num_requests_running 0` and `/v1/models` to `this is not json`:
-
-```
-UNHANDLED EXCEPTION type= JSONDecodeError -> Expecting value: line 1 column 1 (char 0)
-```
-
-### Fix (applied)
-
-Guard the parse, matching the defensive pattern already used by the generic and
-ollama adapters, and fall back to an empty payload so the report still emits
-with honest provenance:
-
-```python
-models_resp = await client.get(f"{base_url}/v1/models")
 try:
-    models_resp.raise_for_status()
-    models = models_resp.json()
-except (httpx.HTTPError, ValueError):
-    models = {}
+    slots_resp = await client.get(f"{base}/slots", timeout=client.timeout)
+    if slots_resp.status_code == 200:
+        _source_slot_ctx(slots_resp.json(), merge)
+except httpx.HTTPError:
+    pass
 ```
 
-After the fix the adapter returns the report with `n_ctx_total` provenance
-`unknown` instead of crashing, consistent with the codebase's honesty rule
-("`unknown` is a valid answer").
+A transport failure reaching `/slots` (connection reset, timeout, DNS) is
+silently discarded. The per-slot cross-check / provenance refinement is
+skipped without a single log line, so an operator has no way to know a server
+that *does* serve `/slots` had its contribution dropped. The `/slots` read is
+the only place a non-fatal failure is swallowed in the llama.cpp adapter.
 
-No existing test regressed (`tests/test_backend_vllm.py`, `tests/test_cli.py`,
-`tests/test_probe_config.py` all pass). No new tests added in order to keep the
-change minimal; the repro is scripted above.
+Separately, the `except` clause only catches `httpx.HTTPError`; if `/slots`
+returns HTTP 200 with an unparsable body, `slots_resp.json()` raises
+`ValueError` which is **not** caught and propagates up through `read_config`,
+crashing the whole probe. Both defects sit in the same optional-read block and
+both are "the optional `/slots` lookup did not yield a value".
 
----
+### How to reproduce
 
-## Finding 2 — Capacity cliff reports a never-probed max as "measured"
+1. `read_config` against a llama.cpp server whose `/slots` transport fails
+   (e.g. a handler that raises `httpx.ConnectError` for the `/slots` path only).
+2. `read_config` returns normally; nothing is logged; the slot cross-check is
+   silently skipped.
+3. Point `/slots` at a 200 body that is not valid JSON (e.g. `"not json"`).
+   `read_config` raises `ValueError` and the probe aborts.
 
-- File: `llmprobe/probes/capacity.py:184-199`
-- Severity: Medium (honesty/provenance violation, not a crash)
+### Fix (applied)
 
-### What is wrong
-
-The binary search probes only lengths in `[LO, ceiling]` with `LO = 16`.
-If the server rejects every probed length (real capacity is below 16), the
-search drives `hi` below `LO`:
+Log the swallowed failure and tolerate the JSON-parse error in the same
+optional-read block — both are the optional `/slots` lookup not yielding a
+value, and both must never crash a probe nor vanish silently:
 
 ```python
-lo, hi = LO, ceiling          # 16, 32768
-while lo <= hi:
-    mid = (lo + hi) // 2
-    ...
-    else:
-        hi = mid - 1
-
-max_accepted = hi             # can fall to 15
+try:
+    slots_resp = await client.get(f"{base}/slots", timeout=client.timeout)
+    if slots_resp.status_code == 200:
+        _source_slot_ctx(slots_resp.json(), merge)
+except (httpx.HTTPError, ValueError):
+    logger.exception("GET %s/slots failed; per-slot cross-check skipped", base)
 ```
 
-`max_accepted` then equals `15`, a length that was never probed (only lengths
-`>= 16` were sent). `report.py:72-73` renders this value with provenance
-`MEASURED`:
-
-```
-| max input tokens (...) | unknown | 15 | measured | ok |
-```
-
-So llmprobe reports "measured 15" when in fact every probed length was rejected
-and the true maximum is only known to be *below 16*.
-
-### How to reproduce
-
-Confirmed with `make_mock_server(max_tokens=10, behavior="hard_error")` (a
-server that rejects every length if a hard cliff exists below 16) and
-`probe_capacity(..., ceiling=32768)`:
-
-```
-max_accepted_tokens = 15   LO = 16   # 15 was never sent to the server
-```
-
-### Fix (applied)
-
-`CapacityResult` now carries `max_accepted_source: Provenance`. When the binary
-search rejects every probed length (`max_accepted < LO`), `probe_capacity` sets
-`max_accepted_source = UNKNOWN` and `report._capacity_rows` renders the value
-with that provenance instead of a fabricated `measured`. The report therefore
-never claims a measurement for a length that was never probed. A regression
-test (`test_below_lo_capacity_is_reported_as_unmeasured`) drives a mock server
-whose real capacity is below `LO` and asserts provenance `UNKNOWN`.
+`read_config` now surfaces the reason for the skipped cross-check via the
+logger while still never raising on this optional read. No existing test
+regressed (`tests/test_backend_llamacpp.py`, including
+`test_slots_501_does_not_raise`, all pass).
 
 ---
 
-## Finding 3 — `llmprobe/tokens.py` is dead code
+## Finding 2 (FIXED) — Backend `detect` swallow-all is silent
 
-- File: `llmprobe/tokens.py`
-- Severity: Medium (maintenance/consistency, no live crash)
+- File: `llmprobe/probes/config.py` (`_detect_adapter`)
+- Severity: Medium (silent exception swallow + misattribution hazard)
 
 ### What is wrong
 
-`make_prompt_of_exactly` is implemented and fully tested
-(`tests/test_tokens.py`) but is never imported by any production module. The
-production capacity probe (`llmprobe/probes/capacity.py`) instead builds
-prompts with `_n_token_prompt` (capacity.py:37-45), which assumes each
-whitespace-delimited word is exactly one token and never verifies the count.
+Adapter selection wraps every backend's `detect` in a `try/except Exception`
+that returns confidence `0.0` on **any** exception:
 
-`capacity.py`'s own module docstring claims its prompts "mirror the `/tokenize`
-contract the tokenizer verifies" (capacity.py:40-41), yet no tokenizer is ever
-invoked on that path. The verified-tokenizer machinery in `tokens.py` exists
-and is tested but is not wired in, so the "exact length" guarantee the token
-module advertises is never exercised by the real capacity probe.
+```python
+try:
+    score = await adapter(client, base_url)
+except Exception:
+    return 0.0
+```
+
+The breadth is intentional (a failing probe must never block selection), but
+the swallow is silent. This is the one catch-all in the codebase that also
+absorbs programmer errors (a `KeyError`, `TypeError`, or `AttributeError`
+introduced into any adapter's `detect`), converts them into "no match", and
+thereby lets a *different* adapter win the selection round. The whole report
+is then attributed to the wrong backend — with no log line, no finding, and
+no provenance marker indicating anything went wrong during selection. Per the
+README's honesty principle this should at least be diagnosable.
 
 ### How to reproduce
 
-`grep -rn "make_prompt_of_exactly" llmprobe/` returns only the definition in
-`tokens.py`; the only callers are its tests.
+1. Introduce a transient bug (e.g. `undefined_var` / a `KeyError`) inside any
+   adapter's `detect`.
+2. Run the CLI.
+3. Selection silently falls through to another adapter and emits a plausible
+   but wrong report; nothing indicates the failing adapter raised.
 
 ### Fix (applied)
 
-The unused module `llmprobe/tokens.py` and its test `tests/test_tokens.py` were
-removed, eliminating the dead code. `capacity.py`'s docstrings no longer claim
-prompts "mirror the `/tokenize` contract" — they now state plainly that no
-tokenizer is invoked and that the classification depends on the server's own
-responses, not on an exact token count. The nominal per-word estimate is honest
-here because the binary search measures the cliff from server responses, not
-from any assumed tokenization.
+Keep the same robust control flow (selection must never block) but stop the
+swallow being silent: log the exception with the failing `base_url` before
+returning `0.0`:
+
+```python
+except Exception:
+    logger.exception(
+        "backend detect() raised on %s; treated as no-match", base_url
+    )
+    return 0.0
+```
+
+A genuine detection bug is now visible in the log for diagnostics. Behavior is
+otherwise unchanged — no test regressed (`tests/test_config.py`,
+`tests/test_probe_config.py`, `tests/test_cli.py` all pass).
 
 ---
 
-## Finding 4 — Context mismatch message omits the claiming trigger
+## Finding 3 (DOCUMENTED, not fixed) — Ollama helpers return `None` for both "no data" and "failed"
 
-- File: `llmprobe/probes/slots.py:45-55`
-- Severity: Low (report clarity, no crash)
-
-### What is wrong
-
-`check_slots` sets `mismatched = True` in either of two ways: the derived
-per-slot context disagrees with the reported per-slot context, OR it disagrees
-with the caller-claimed `claimed_ctx`. But the finding message only ever
-mentions the reported per-slot context:
-
-```
-f"derived per-slot context ({derived_per_slot}) disagrees with "
-f"reported per-slot context ({config.n_ctx_per_slot})"
-```
-
-When the mismatch comes solely from the `claimed_ctx` branch (reported
-per-slot context is `None` or consistent), the message describes a comparison
-against `config.n_ctx_per_slot` that did not actually cause the finding, and
-the `advertised`/`measured` fields do carry `claimed_ctx` but the prose does
-not explain why.
-
-### How to reproduce
-
-Call `check_slots` with a config where `total_slots` and `n_ctx_total` derive a
-per-slot value that matches `config.n_ctx_per_slot` but differs from a supplied
-`claimed_ctx`. A `CTX_PER_SLOT_MISMATCH` finding is emitted whose message
-cites only the reported per-slot context, not the (equal) reported value that
-would appear consistent from the message text alone.
-
-### Fix (applied)
-
-`check_slots` now reports which value (or values) actually disagreed with the
-derived per-slot context. The `reported per-slot context` clause is included
-only when the reported value genuinely differs from the derived value; when the
-mismatch comes solely from `claimed_ctx`, the message names the claimed value
-instead. The prose can no longer cite a comparison that did not trigger the
-finding.
-
----
-
-## Finding 5 — Capacity reports the ceiling as a "measured" max when it is a lower bound
-
-- File: `llmprobe/probes/capacity.py` (`_binary_search`, ceiling-accepted branch)
-- Severity: Medium (honesty/provenance violation, not a crash)
+- File: `llmprobe/backends/ollama.py` (`_get_json`, `_post_json`, `read_config`)
+- Severity: Low (None-return conflates failure with absence; no code change)
 
 ### What is wrong
 
-When the server accepts the ceiling itself, the binary search returns
-`max_accepted_tokens = ceiling` with the default provenance `MEASURED`
-(`CapacityResult.max_accepted_source` defaults to `Provenance.MEASURED`). But
-`cliff_behavior` is set to `ACCEPTED`, which explicitly means the real capacity
-is **above** the ceiling — the probe never sent any length greater than the
-ceiling. So the reported "measured max" is only a *lower bound*, never the
-measured maximum.
+`_get_json` / `_post_json` return `None` for three indistinguishable causes: a
+transport failure, a non-200 status, and an unparsable/`ValueError` body:
 
-This is the exact mirror of Finding 2 (below-`LO` capacity), which was already
-fixed to report `UNKNOWN` for a lower bound the probe could not measure. The
-above-ceiling case was left unhandled, so an honest server that accepts the
-whole probed range reports a fabricated "measured" maximum.
+```python
+async def _get_json(client, url):
+    try:
+        resp = await client.get(url)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+```
+
+`read_config` then treats `None` as "no online model" and returns an
+`EffectiveConfig` with `model_id=""`, `n_ctx_total=None`, provenance
+`UNKNOWN`, and — crucially — **no `ERROR` finding**. A live server whose
+`/api/tags` fails on the wire is therefore reported as a perfectly normal
+"unknown config" rather than as a failed read. This is the inverse of the
+generic adapter, which emits an explicit `ERROR` finding (code
+`GENERIC_MODELS_UNREACHABLE`) when its model endpoint cannot be read. The
+report is not *untrue* (provenance is honestly `unknown`), but the failure
+signal is masked.
+
+The `None` return is judged an accepted, low-severity compromise: the CLI
+already performs a reachability pre-flight (`cli.py:_assert_reachable`), so a
+fully unreachable server raises before `read_config` runs; the residual risk
+is only a partial failure (reachable `/` but failed `/api/tags`), which is an
+edge case. Fixing it properly (returning a findings list from the helpers or
+distinguishing "no models" from "failed") is a larger change than the minimal
+scope of this review, so it is documented here rather than applied.
 
 ### How to reproduce
 
-`make_mock_server(max_tokens=8192, behavior="honest")` with
-`probe_capacity(..., ceiling=8192)` (the honest server accepts everything, so
-the ceiling branch is taken):
-
-```
-max_accepted_tokens = 8192   # only known to be >= 8192; true max above
-max_accepted_source = Provenance.MEASURED  # reported as a measurement
-cliff_behavior      = CliffBehavior.ACCEPTED  # implies max > ceiling
-```
-
-The report therefore prints `| max input tokens (...) | 8192 | measured | ok |`
-implying `8192` was measured as the maximum, when the only honest statement is
-"the server accepts at least 8192; the true maximum is unknown".
-
-### Fix (applied)
-
-Set `max_accepted_source = Provenance.UNKNOWN` in the ceiling-accepted branch,
-matching the below-`LO` handling: a lower bound the probe did not measure is
-never reported as `measured`. Updated the `_binary_search` docstring and the
-`CapacityResult` docstring in `models.py` to state that an accepted ceiling
-means the value is a lower bound. Added a regression test
-(`test_ceiling_accepted_max_is_reported_as_unmeasured`) driving the honest mock
-server and asserting `max_accepted_source == Provenance.UNKNOWN`.
-
-The full suite passes (142 tests, +1 new regression test; the pre-existing
-`test_honest_server_accepts_ceiling` still passes since it does not assert
-provenance).
+Serve `GET /api/tags` as a transport error while `/` (the reachability probe)
+succeeds, then run `read_effective_config`. It returns an empty `unknown`
+config with zero findings instead of surfacing an error.
 
 ---
 
 ## Notes on what was checked and found clean
 
-- `_OUTCOME_TO_CLIFF[cliff_outcome]` in `capacity.py:198` cannot `KeyError`:
-  the classifier only ever returns `accepted` / `hard_error` /
-  `silent_truncation`, all present in the mapping.
-- Adapter `detect` functions are wrapped by `_detect_adapter`
-  (`config.py:40-56`), so a raising probe never blocks selection.
-- Provenance markers: the report never prints a numeric row without a marker;
-  unreadable fields fall back to `unknown` rather than a confident guess.
-- Exit-code derivation (`models.py:102-114`) matches the CLI's use.
+- `tokens._tokenize`, `capacity._post_embed`, `capacity._post_chat` return
+  `None` on unreadable responses, but their docstrings make the contract
+  explicit (transport failures propagate; `None` means "non-200 or unparsable")
+  and callers treat `None` honestly (`hard_error`), so this is an explicit
+  failure indicator, not a masked failure.
+- The remaining `except ValueError` / `except (KeyError, ...)` guards across
+  `vllm.py`, `ollama.py`, `capacity.py`, and `tokens.py` all either return an
+  explicit `None` handled honestly or fall back to an explicit provenance
+  `unknown`; none swallow without a traceable response.
+- `cli.py`'s single `except httpx.HTTPError` prints the failure to stderr and
+  exits with code 2 — a surfaced, not swallowed, error.
+- `report.py`'s `except (TOMLDecodeError, OSError)` / `PackageNotFoundError`
+  fall back to the honest `"unknown"` version marker rather than a guess.
