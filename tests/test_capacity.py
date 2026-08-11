@@ -65,6 +65,42 @@ async def test_silent_truncation_server_cliff() -> None:
 
 
 @pytest.mark.asyncio
+async def test_silent_truncation_last_token_difference() -> None:
+    """The two-prompt method differs in the FINAL token and detects silent truncation.
+
+    README promise: 'silent truncation' is surfaced by sending two prompts that
+    differ only in their last token and comparing the returned embeddings. A
+    silent_truncation server derives its embedding only from the first
+    ``max_tokens`` tokens, so two oversized prompts differing only in a dropped
+    tail token collapse to the SAME vector. When that happens the probe MUST
+    report ``SILENT_TRUNCATION``, not ``accepted``.
+
+    We first prove the two prompts genuinely differ only in their final token,
+    then run ``probe_capacity`` and require it to classify the cliff as
+    ``SILENT_TRUNCATION`` — i.e. the last-token difference is the very signal
+    the embedding comparison uses to detect the silently dropped tail.
+    """
+    n = 512 + 64  # above the cliff, so the differing tail is only distinction
+
+    final_a = "llmprobeFinalA"
+    final_b = "llmprobeFinalB"
+    prompt_a = " ".join(["tok"] * (n - 1) + [final_a])
+    prompt_b = " ".join(["tok"] * (n - 1) + [final_b])
+    assert prompt_a.split()[-1] != prompt_b.split()[-1]
+    assert prompt_a != prompt_b
+    assert prompt_a.rsplit(" ", 1)[0] == prompt_b.rsplit(" ", 1)[0]
+
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+        )
+
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
+
+
+@pytest.mark.asyncio
 async def test_honest_server_accepts_ceiling() -> None:
     """An honest server never errors nor truncates: everything up to ceiling is accepted."""
     server = make_mock_server(max_tokens=8192, behavior="honest")
