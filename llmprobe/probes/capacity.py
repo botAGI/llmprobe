@@ -117,13 +117,17 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 async def _post_embed(
-    client: httpx.AsyncClient, base_url: str, prompt: str, timeout: httpx.Timeout
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    prompt: str,
+    timeout: httpx.Timeout,
 ) -> list[float] | None:
-    """POST one embedding; return the vector on 200 else ``None``."""
+    """POST one embedding to ``endpoint``; return the vector on 200 else ``None``."""
     base = base_url.rstrip("/")
     try:
         resp = await client.post(
-            f"{base}/v1/embeddings",
+            f"{base}{endpoint}",
             json={"input": prompt, "model": "embed-mock"},
             timeout=timeout,
         )
@@ -166,6 +170,7 @@ def _assert_differ_only_in_final_token(a: str, b: str) -> None:
 async def _embed_classify(
     client: httpx.AsyncClient,
     base_url: str,
+    endpoint: str,
     n: int,
     requests: list[int],
     timeout: httpx.Timeout,
@@ -180,9 +185,9 @@ async def _embed_classify(
     b = _n_token_prompt(n, _FINAL_B)
     _assert_differ_only_in_final_token(a, b)
     requests[0] += 1
-    va = await _post_embed(client, base_url, a, timeout)
+    va = await _post_embed(client, base_url, endpoint, a, timeout)
     requests[0] += 1
-    vb = await _post_embed(client, base_url, b, timeout)
+    vb = await _post_embed(client, base_url, endpoint, b, timeout)
     if va is None or vb is None:
         return "hard_error"
     if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
@@ -393,6 +398,8 @@ async def probe_capacity(
         )
 
     async def classify(n: int) -> str:
-        return await _embed_classify(client, base_url, n, requests, per_request)
+        return await _embed_classify(
+            client, base_url, endpoint, n, requests, per_request
+        )
 
     return await _binary_search(classify, endpoint, ceiling, exact, requests)
