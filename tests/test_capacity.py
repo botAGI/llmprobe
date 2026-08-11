@@ -227,6 +227,52 @@ async def test_chat_honest_server_accepts_ceiling() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_tail_truncation_two_prompts_identical_replies() -> None:
+    """Two chat prompts differing only in their final token expose silent
+    truncation: the truncated server returns identical replies, the honest
+    server returns different ones.
+
+    This is the README promise — the same two-prompt tail method that catches
+    silent truncation on embeddings must catch it on the chat endpoint. If the
+    chat probe could not tell the two apart the product does not work.
+    """
+    n = 512 + 64  # above the cliff, so the differing tail is the only distinction
+
+    final_a = "llmprobeFinalA"
+    final_b = "llmprobeFinalB"
+    prompt_a = " ".join(["tok"] * (n - 1) + [final_a])
+    prompt_b = " ".join(["tok"] * (n - 1) + [final_b])
+    assert prompt_a.split()[-1] != prompt_b.split()[-1]
+
+    async def chat(app, prompt: str) -> str:
+        async with _client(app) as client:
+            resp = await client.post(
+                f"{BASE_URL}{CHAT}",
+                json={
+                    "model": "chat-mock",
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+        assert resp.status_code == 200
+        return resp.json()["choices"][0]["message"]["content"]
+
+    trunc = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    honest = make_mock_server(max_tokens=512, behavior="honest")
+
+    trunc_a = await chat(trunc, prompt_a)
+    trunc_b = await chat(trunc, prompt_b)
+    honest_a = await chat(honest, prompt_a)
+    honest_b = await chat(honest, prompt_b)
+
+    # Silent truncation discards the differing tail -> the two replies are
+    # identical regardless of the different final token.
+    assert trunc_a == trunc_b
+    # Honest parsing preserves the differing tail -> the two replies differ,
+    # proving the two-prompt method is a meaningful (non-vacuous) signal.
+    assert honest_a != honest_b
+
+
+@pytest.mark.asyncio
 async def test_silent_truncation_two_prompts_different_final_token() -> None:
     """The README promise: two prompts differing only in their final token
     expose silent truncation.

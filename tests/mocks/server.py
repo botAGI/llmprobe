@@ -173,10 +173,12 @@ def make_mock_server(
                 prompt = content
                 break
         tokens = _split_words(prompt)
-        # For chat the canary is the FIRST token of the message content; a real
-        # model echoes it. An oversized prompt is a hard error, and a silently
-        # truncated prompt has its head (the canary) dropped only when it is
-        # too long, so the reply can no longer contain it.
+        # An honest server's reply reflects the full prompt (so the differing
+        # tail token produces a differing reply). A silently truncating server
+        # drops the tail beyond ``max_tokens`` and replies from the retained
+        # head only, so two prompts that differ only in a dropped tail token
+        # come back identical — the signal the two-prompt method detects. An
+        # oversized prompt is a hard error.
         if behavior == "hard_error" and len(tokens) > max_tokens:
             response.status_code = 500
             return {
@@ -187,9 +189,11 @@ def make_mock_server(
                 }
             }
         if behavior == "silent_truncation" and len(tokens) > max_tokens:
-            reply = tokens[1] if len(tokens) > 1 else ""
+            # Only the first ``max_tokens`` tokens survive; the reply draws on
+            # the retained head, never the silently-dropped tail.
+            reply = tokens[:max_tokens][0] if tokens and max_tokens > 0 else ""
         else:
-            reply = tokens[0] if tokens else ""
+            reply = prompt
         return {
             "id": "cmpl-mock",
             "object": "chat.completion",

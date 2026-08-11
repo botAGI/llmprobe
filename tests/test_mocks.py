@@ -103,7 +103,7 @@ def test_hard_error_ok_under_limit() -> None:
     assert resp.status_code == 200
 
 
-def test_chat_completions_echoes_first_word() -> None:
+def test_chat_completions_honest_echoes_full_input() -> None:
     server = make_mock_server(max_tokens=16, behavior="honest")
     client = TestClient(server)
     resp = client.post(
@@ -115,7 +115,10 @@ def test_chat_completions_echoes_first_word() -> None:
     )
     assert resp.status_code == 200
     content = resp.json()["choices"][0]["message"]["content"]
-    assert content == "hello"
+    # An honest server's reply reflects the whole prompt, so two prompts that
+    # differ only in their tail must come back different — the premise of the
+    # two-prompt silent-truncation check.
+    assert content == "hello world from mock"
 
 
 def test_chat_completions_silent_truncation_drops_tail() -> None:
