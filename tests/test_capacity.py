@@ -268,6 +268,47 @@ async def test_silent_truncation_two_prompts_different_final_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_silent_truncation_distinguishes_last_token() -> None:
+    """The embedding comparison must be sensitive to the final token.
+
+    README promise: two prompts differing only in their last token are the
+    probe for silent truncation. The comparison is only trustworthy if the
+    server's embedding genuinely reflects the last token of a short prompt —
+    if it always discarded or ignored the tail, differing final tokens would
+    collapse to identical vectors and the truncation check would be vacuous.
+
+    We keep the prompt length *below* the cliff so a silent_truncation server
+    (which only drops tokens beyond ``max_tokens``) keeps the whole input, and
+    the only difference between the two requests is the final token. The
+    embeddings MUST differ, proving the mock can distinguish last tokens and
+    therefore that an identical result on an oversized prompt really means the
+    tail was truncated.
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+
+    async def embed(prompt: str) -> list[float]:
+        async with _client(server) as client:
+            resp = await client.post(
+                f"{BASE_URL}{EMBEDDINGS}",
+                json={"input": prompt, "model": "embed-mock"},
+            )
+        assert resp.status_code == 200
+        return list(resp.json()["data"][0]["embedding"])
+
+    n = 256  # well below the 512 cliff, so no tail is dropped
+    final_a = "llmprobeDistA"
+    final_b = "llmprobeDistB"
+    prompt_a = " ".join(["tok"] * (n - 1) + [final_a])
+    prompt_b = " ".join(["tok"] * (n - 1) + [final_b])
+    assert prompt_a.split()[-1] != prompt_b.split()[-1]
+
+    emb_a = await embed(prompt_a)
+    emb_b = await embed(prompt_b)
+
+    assert emb_a != emb_b
+
+
+@pytest.mark.asyncio
 async def test_binary_search_probe_request_count_is_logarithmic() -> None:
     """The capacity probe MUST binary-search over input length, not scan
     linearly: it must locate a cliff deep inside ``[LO, ceiling]`` in a number
