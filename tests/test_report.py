@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -122,13 +123,19 @@ def _golden(name: str) -> str:
     return (GOLDEN_DIR / name).read_text()
 
 
+# The golden reports are byte-for-byte fixtures, so the rendering must be
+# deterministic: a fixed UTC timestamp stands in for the live measurement
+# time the real CLI would stamp.
+_FIXED_MEASURED_AT = datetime(2026, 8, 11, 7, 38, 33, tzinfo=timezone.utc)
+
+
 def test_clean_report_matches_golden() -> None:
-    md = to_markdown(_clean_report())
+    md = to_markdown(_clean_report(), measured_at=_FIXED_MEASURED_AT)
     assert md == _golden("clean.md")
 
 
 def test_silent_truncation_report_matches_golden() -> None:
-    md = to_markdown(_silent_report())
+    md = to_markdown(_silent_report(), measured_at=_FIXED_MEASURED_AT)
     assert md == _golden("silent-truncation.md")
 
 

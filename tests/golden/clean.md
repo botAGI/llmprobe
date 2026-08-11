@@ -1,5 +1,7 @@
 # Capability Report — http://localhost:8080
 
+llmprobe 0.1.0 · measured 2026-08-11T07:38:33Z (UTC)
+
 | Property | Claimed | Measured | Source | Verdict |
 | --- | --- | --- | --- | --- |
 | backend | llamacpp | llamacpp | read | ok |
