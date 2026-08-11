@@ -263,6 +263,54 @@ def _scale_timeout(timeout: httpx.Timeout, n: int) -> float:
     return min(scale, base + _MAX_TIMEOUT_ALLOWANCE)
 
 
+class _EmbeddingHardError(Exception):
+    """Raised when an embedding request returns no usable vector.
+
+    The two-prompt method (:func:`_embeddings_differ`) must classify a length
+    only from genuine embeddings. When either of the two POSTs fails to yield a
+    parseable vector, the length cannot be verified as accepted, so we raise
+    this so the caller reports ``hard_error`` instead of guessing a verdict.
+    """
+
+
+async def _embeddings_differ(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    n: int,
+    model: str,
+    timeout: httpx.Timeout,
+) -> bool:
+    """Return ``True`` when two ``n``-token prompts genuinely differ.
+
+    This is the README's "silent truncation" probe: we build two prompts of
+    exactly ``n`` tokens via :func:`_n_token_prompt` that differ ONLY in their
+    final token (``_FINAL_A`` vs ``_FINAL_B``), POST both to ``endpoint`` and
+    compute the cosine similarity of the returned vectors. A server that
+    silently drops the tail beyond its real limit returns effectively identical
+    vectors (cosine similarity ~1.0) regardless of the differing tail, so we
+    return ``False`` (``silent_truncation``). ``True`` is returned only when the
+    vectors genuinely differ (cosine similarity at or below
+    :data:`COSINE_SIMILARITY_THRESHOLD`), meaning the length is honestly
+    accepted.
+
+    A non-200 or unparsable embedding response raises
+    :class:`_EmbeddingHardError` so the caller classifies it as ``hard_error``
+    rather than fabricating a verdict; transport failures (timeout, dropped
+    connection) propagate as ``httpx.HTTPError`` for the caller to surface as a
+    failed server instead of a guessed classification.
+    """
+    a = await _n_token_prompt(client, base_url, n, _FINAL_A, timeout)
+    b = await _n_token_prompt(client, base_url, n, _FINAL_B, timeout)
+    _assert_differ_only_in_final_token(a, b)
+    per_request = httpx.Timeout(_scale_timeout(timeout, n))
+    va = await _post_embed(client, base_url, endpoint, a, model, per_request)
+    vb = await _post_embed(client, base_url, endpoint, b, model, per_request)
+    if va is None or vb is None:
+        raise _EmbeddingHardError
+    return _cosine(va, vb) <= COSINE_SIMILARITY_THRESHOLD
+
+
 async def _embed_classify(
     client: httpx.AsyncClient,
     base_url: str,
@@ -272,9 +320,10 @@ async def _embed_classify(
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> str:
-    """Classify length ``n`` against ``/v1/embeddings``.
+    """Classify length ``n`` against the embeddings endpoint.
 
-    Two identical-length prompts differing only in the final token. A 4xx/5xx
+    Delegates to :func:`_embeddings_differ`, which probes two identical-length
+    prompts differing only in the final token. A 4xx/5xx (no usable embedding)
     is ``hard_error``; effectively identical vectors are ``silent_truncation``;
     genuinely different vectors are ``accepted``. A transport failure (timeout
     or a dropped connection mid-flight) yields ``transport_error``, distinct
@@ -284,48 +333,26 @@ async def _embed_classify(
     re-raised so an unusable server surfaces as ``httpx.HTTPError`` instead of a
     fabricated classification.
     """
-    a = await _n_token_prompt(client, base_url, n, _FINAL_A, timeout)
-    b = await _n_token_prompt(client, base_url, n, _FINAL_B, timeout)
-    _assert_differ_only_in_final_token(a, b)
-    requests[0] += 1
+    requests[0] += 2
     try:
-        va = await _post_embed(
-            client,
-            base_url,
-            endpoint,
-            a,
-            model,
-            httpx.Timeout(_scale_timeout(timeout, n)),
+        differs = await _embeddings_differ(
+            client, base_url, endpoint, n, model, timeout
         )
-    except httpx.TransportError as exc:
-        if isinstance(exc, _PROPAGATED_TRANSPORT):
-            raise
-        return "transport_error"
-    requests[0] += 1
-    try:
-        vb = await _post_embed(
-            client,
-            base_url,
-            endpoint,
-            b,
-            model,
-            httpx.Timeout(_scale_timeout(timeout, n)),
-        )
-    except httpx.TransportError as exc:
-        if isinstance(exc, _PROPAGATED_TRANSPORT):
-            raise
-        return "transport_error"
-    if va is None or vb is None:
+    except _EmbeddingHardError:
         return "hard_error"
-    if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
-        logger.info(
-            "%s confirmed: prompt tail silently discarded (a==b at length %d); "
-            "differing final token produced identical embeddings",
-            _TRUNCATION_FLAG,
-            n,
-        )
-        return "silent_truncation"
-    return "accepted"
+    except httpx.TransportError as exc:
+        if isinstance(exc, _PROPAGATED_TRANSPORT):
+            raise
+        return "transport_error"
+    if differs:
+        return "accepted"
+    logger.info(
+        "%s confirmed: prompt tail silently discarded (a==b at length %d); "
+        "differing final token produced identical embeddings",
+        _TRUNCATION_FLAG,
+        n,
+    )
+    return "silent_truncation"
 
 
 async def _post_chat(
