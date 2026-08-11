@@ -1,6 +1,6 @@
 [project]
 name = "llmprobe"
-version = "0.0.1"
+version = "0.1.0"
 description = "Point it at a local inference server: reports what it can actually do, measured, not claimed."
 readme = "README.md"
 requires-python = ">=3.11"
