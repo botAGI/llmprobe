@@ -94,28 +94,31 @@ def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
 
 
 def _capacity_findings(
-    reference: int | None,
+    claimed_ctx: int | None,
     cap: CapacityResult,
 ) -> list[Finding]:
-    """Surface a measured cliff below the claimed context as a finding.
+    """Surface a measured cliff below the claimed context as a mismatch finding.
 
     A cliff (silent truncation or hard error) found strictly below the context
-    the caller was led to believe is a mismatch worth reporting. When there is
-    no reference context, or the measured cliff is not below it, nothing is
-    emitted.
+    the caller claimed with ``--claimed-ctx`` is a mismatch worth failing on.
+    When there is no ``claimed_ctx``, or the measured cliff is not below it,
+    nothing is emitted. Comparing ``claimed_ctx`` against the measured
+    ``cap.max_accepted_tokens`` is the mismatch check that drives exit code 1.
     """
+    if claimed_ctx is None:
+        return []
     if cap.cliff_behavior not in (
         CliffBehavior.SILENT_TRUNCATION,
         CliffBehavior.HARD_ERROR,
     ):
         return []
-    if reference is None or cap.max_accepted_tokens >= reference:
+    if cap.max_accepted_tokens >= claimed_ctx:
         return []
     return [
         Finding(
             severity=Severity.MISMATCH,
             code="UBATCH_CEILING",
-            advertised=reference,
+            advertised=claimed_ctx,
             measured=cap.max_accepted_tokens,
             message=(
                 f"requests past {cap.max_accepted_tokens} tokens are "
@@ -176,9 +179,6 @@ async def probe(
 
         capacity: list[CapacityResult] = []
         if do_probe:
-            reference = (
-                claimed_ctx if claimed_ctx is not None else config.n_ctx_total
-            )
             cap = await probe_capacity(
                 client,
                 base_url,
@@ -187,7 +187,9 @@ async def probe(
                 backend=config.backend,
             )
             capacity.append(cap)
-            findings.extend(_capacity_findings(reference, cap))
+            # Compare --claimed-ctx against the measured max_accepted_tokens;
+            # a claimed_ctx mismatch is surfaced as a MISMATCH finding => exit 1.
+            findings.extend(_capacity_findings(claimed_ctx, cap))
 
         report_url = redact_base_url(base_url)
         return ProbeReport(
