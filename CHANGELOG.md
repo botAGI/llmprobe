@@ -5,21 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-08-11
+
+### Added
+
+- **Детектор тихого усечения** — определяет, когда задняя часть запроса
+  молча отбрасывается сервером, вместо того чтобы отчитаться о ней.
+- **Адаптеры llama.cpp/vLLM/Ollama/generic** — поддержка нескольких бэкендов
+  через общий интерфейс с запасным вариантом для систем, совместимых с OpenAI.
+- **Карточка возможностей с маркерами происхождения** — каждый отчёт
+  сопровождается маркером (`read`, `measured`, `inferred`, `unknown`),
+  показывающим, откуда взялось значение.
+- **Коды возврата 0/1/2** — явные коды завершения для успеха, ошибки и
+  неопределённого результата, чтобы вызывающие скрипты могли различать исход.
+
 ## [Unreleased]
 
 ### Added
 
-- **Initial release preparation** — first public release of llmprobe, a CLI
-  that measures what a running local inference server can actually do rather
-  than what it claims.
-- **Capacity probing** — binary search to the real maximum input for each
-  endpoint, and detection of silent truncation where the tail of a prompt is
-  silently discarded.
-- **Per-slot context reporting** — effective per-slot context derived from the
-  actual server config, not from the values you passed (a missing flag is a
-  default, not `1`).
-- **Multiple backends** — support for llama.cpp (`llama-server`), vLLM, Ollama,
-  and a generic OpenAI-compatible fallback.
-- **Provenance on every value** — each reported value carries a marker
-  (`read`, `measured`, `inferred`, or `unknown`) so you can tell what the
-  server told us from what we probed.
+- Начальная подготовка релиза — настройка публикации и инфраструктуры выпуска.
