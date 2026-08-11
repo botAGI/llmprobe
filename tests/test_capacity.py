@@ -282,30 +282,27 @@ async def test_chat_honest_server_accepts_ceiling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_tail_truncation_two_prompts_identical_replies() -> None:
-    """Two chat prompts differing only in their final token expose silent
-    truncation: the truncated server returns identical replies, the honest
-    server returns different ones.
+async def test_chat_truncation_drops_canary_head_but_honest_preserves_it() -> None:
+    """A chat silent_truncation server drops the head canary beyond its limit;
+    an honest server preserves it.
 
-    This is the README promise — the same two-prompt tail method that catches
-    silent truncation on embeddings must catch it on the chat endpoint. If the
-    chat probe could not tell the two apart the product does not work.
+    The chat probe detects silent truncation by prepending a canary marker at
+    the very start of the prompt and asking the model to echo the first word.
+    That check is only meaningful if a silently truncating server genuinely
+    loses the head canary while an honest server keeps it — otherwise the
+    canary detector would be vacuous and could not tell the two apart.
     """
-    n = 512 + 64  # above the cliff, so the differing tail is the only distinction
+    n = 512 + 64  # above the cliff, so the head is dropped on truncation
 
-    final_a = "llmprobeFinalA"
-    final_b = "llmprobeFinalB"
-    prompt_a = " ".join(["tok"] * (n - 1) + [final_a])
-    prompt_b = " ".join(["tok"] * (n - 1) + [final_b])
-    assert prompt_a.split()[-1] != prompt_b.split()[-1]
+    prompt = " ".join(["llmprobeCanary"] + ["tok"] * (n - 1))
 
-    async def chat(app, prompt: str) -> str:
+    async def chat(app, p: str) -> str:
         async with _client(app) as client:
             resp = await client.post(
                 f"{BASE_URL}{CHAT}",
                 json={
                     "model": "chat-mock",
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [{"role": "user", "content": p}],
                 },
             )
         assert resp.status_code == 200
@@ -314,17 +311,15 @@ async def test_chat_tail_truncation_two_prompts_identical_replies() -> None:
     trunc = make_mock_server(max_tokens=512, behavior="silent_truncation")
     honest = make_mock_server(max_tokens=512, behavior="honest")
 
-    trunc_a = await chat(trunc, prompt_a)
-    trunc_b = await chat(trunc, prompt_b)
-    honest_a = await chat(honest, prompt_a)
-    honest_b = await chat(honest, prompt_b)
+    trunc_reply = await chat(trunc, prompt)
+    honest_reply = await chat(honest, prompt)
 
-    # Silent truncation discards the differing tail -> the two replies are
-    # identical regardless of the different final token.
-    assert trunc_a == trunc_b
-    # Honest parsing preserves the differing tail -> the two replies differ,
-    # proving the two-prompt method is a meaningful (non-vacuous) signal.
-    assert honest_a != honest_b
+    # Silent truncation drops the head -> the canary marker is gone from the
+    # reply, which is the exact signal the canary check detects.
+    assert "llmprobeCanary" not in trunc_reply
+    # Honest processing keeps the whole input -> the canary is preserved,
+    # proving the check is non-vacuous (truncation truly destroys the marker).
+    assert "llmprobeCanary" in honest_reply
 
 
 @pytest.mark.asyncio

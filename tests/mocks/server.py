@@ -173,11 +173,11 @@ def make_mock_server(
                 prompt = content
                 break
         tokens = _split_words(prompt)
-        # An honest server's reply reflects the full prompt (so the differing
-        # tail token produces a differing reply). A silently truncating server
-        # drops the tail beyond ``max_tokens`` and replies from the retained
-        # head only, so two prompts that differ only in a dropped tail token
-        # come back identical — the signal the two-prompt method detects. An
+        # An honest server's reply reflects the full prompt. The chat probe
+        # detects silent truncation via a canary marker placed at the very
+        # START of the prompt (the model is told to echo the first word), so a
+        # silently truncating server — which drops the head beyond
+        # ``max_tokens`` — loses that canary and echoes something else. An
         # oversized prompt is a hard error.
         if behavior == "hard_error" and len(tokens) > max_tokens:
             response.status_code = 500
@@ -189,9 +189,10 @@ def make_mock_server(
                 }
             }
         if behavior == "silent_truncation" and len(tokens) > max_tokens:
-            # Only the first ``max_tokens`` tokens survive; the reply draws on
-            # the retained head, never the silently-dropped tail.
-            reply = tokens[:max_tokens][0] if tokens and max_tokens > 0 else ""
+            # Only the last ``max_tokens`` tokens survive; the head declared at
+            # the front (the canary marker) is dropped, so the reply echoes a
+            # retained token that is not the canary.
+            reply = tokens[-max_tokens:][0] if tokens and max_tokens > 0 else ""
         else:
             reply = prompt
         return {

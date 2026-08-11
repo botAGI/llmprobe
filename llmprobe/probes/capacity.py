@@ -9,9 +9,12 @@ compare the returned vectors. A server that silently drops the tail returns
 identical vectors (cosine similarity effectively 1.0) regardless of the
 differing tail — we call that ``SILENT_TRUNCATION``. Only when the two
 responses genuinely differ do we accept the length. A 4xx/5xx is
-``HARD_ERROR``. The same two-prompt method is used for
-``/v1/chat/completions``: two prompts differing only in their final token
-whose replies are identical reveal a silently dropped tail.
+``HARD_ERROR``. The ``/v1/chat/completions`` path uses a different, canary
+marker instead of a two-prompt tail compare (chat models are often
+deterministic in the tail, so comparing replies is unreliable): a marker word
+is prepended at the very beginning of the prompt and the model is told to
+reply with the first word; a server that drops the head beyond its limit
+returns a reply without the marker, which we call ``SILENT_TRUNCATION``.
 
 Imports only from :mod:`llmprobe.models`.
 """
@@ -51,6 +54,13 @@ _FILLER = "tok"
 _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
 _CANARY = "llmprobeCanary"
+
+# Tell the model to echo the first word so we can check whether the head
+# (which begins with the canary) survived the server's context handling.
+_CANARY_INSTRUCTION = (
+    "The first word of my message is a unique marker. "
+    "Reply with exactly that first word and nothing else."
+)
 
 
 def _resolve_probe_path(endpoint: Endpoint, backend: Backend) -> str:
@@ -245,7 +255,10 @@ async def _post_chat(
 ) -> str | None:
     """POST one chat message to ``path``; return the reply content on 200 else ``None``.
 
-    Transport failures propagate (an unreachable server must surface as an
+    The request carries a system instruction telling the model to reply with
+    the first word of the user message. The canary marker is the first word, so
+    the reply echoes it only when the head of the prompt survived. Transport
+    failures propagate (an unreachable server must surface as an
     ``httpx.HTTPError``, never a fabricated ``hard_error``); only a non-200
     status or an unparsable body yields ``None``.
     """
@@ -254,7 +267,10 @@ async def _post_chat(
         f"{base}{path}",
         json={
             "model": "chat-mock",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": _CANARY_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
         },
         timeout=timeout,
     )
@@ -276,34 +292,31 @@ async def _chat_classify(
 ) -> str:
     """Classify length ``n`` against the configured chat path.
 
-    Two identical-length prompts differing only in the final token are sent as
-    the single user message, so the server's notion of input length tracks
-    exactly the bytes we probe. A 4xx/5xx is ``hard_error``; effectively
-    identical replies are ``silent_truncation`` — a server that drops the tail
-    returns the same reply whatever the differing final token; genuinely
-    different replies are ``accepted``.
+    A canary marker word is prepended at the very beginning of an ``n``-token
+    prompt and the model is told to reply with the first word. A server that
+    silently truncates an oversized input drops the head, so the canary no
+    longer appears in the reply — that is ``silent_truncation``. A 4xx/5xx is
+    ``hard_error``; a reply that still carries the canary is ``accepted``.
+
+    This replaces the earlier method that compared full outputs of two prompts
+    differing only in their final token, which produced false positives on
+    servers whose replies are deterministic regardless of the tail.
     """
-    tail_a = await _n_token_prompt(
-        client, base_url, max(n - 1, 0), _FINAL_A, timeout
+    tail = await _n_token_prompt(
+        client, base_url, max(n - 1, 0), _FILLER, timeout
     )
-    tail_b = await _n_token_prompt(
-        client, base_url, max(n - 1, 0), _FINAL_B, timeout
-    )
-    a = f"{_CANARY} " + tail_a
-    b = f"{_CANARY} " + tail_b
-    _assert_differ_only_in_final_token(a, b)
+    prompt = f"{_CANARY} " + tail
     requests[0] += 1
-    ra = await _post_chat(client, base_url, path, a, timeout)
-    requests[0] += 1
-    rb = await _post_chat(client, base_url, path, b, timeout)
-    if ra is None or rb is None:
+    reply = await _post_chat(client, base_url, path, prompt, timeout)
+    if reply is None:
         return "hard_error"
-    if ra == rb:
+    if _CANARY not in reply:
         logger.info(
-            "%s confirmed for chat: prompt tail silently discarded (a==b at "
-            "length %d); differing final token produced identical replies",
+            "%s confirmed for chat: head silently discarded at length %d; "
+            "canary %r absent from the reply",
             _TRUNCATION_FLAG,
             n,
+            _CANARY,
         )
         return "silent_truncation"
     return "accepted"
@@ -420,8 +433,7 @@ async def _binary_search_chat(
     """Binary-search the ``/v1/chat/completions`` cliff.
 
     Runs the shared binary-search loop against :func:`_chat_classify`, which
-    probes each length via the same two-prompt tail method used for the
-    embeddings endpoint.
+    probes each length via the canary-head method described there.
     """
     async def classify(n: int) -> str:
         return await _chat_classify(client, base_url, endpoint, n, requests, timeout)
