@@ -48,6 +48,38 @@ backend). Every HTTP request carries a per-request timeout (default 10s,
 overridable with `--timeout`) so an unresponsive server fails fast instead of
 hanging the process.
 
+## Quick start
+
+Point it at a running server and read what the server actually exposes. These
+three commands take you from install to an automated capacity check. Each
+flag below is a real CLI option — verify against `llmprobe --help`.
+
+1. **Install.**
+
+   ```bash
+   uvx llmprobe
+   ```
+
+2. **Safe run** — read configuration only, send no inference traffic, and get
+   a report of what the server advertises and what llmprobe can verify as
+   `read`:
+
+   ```bash
+   uvx llmprobe http://localhost:8080
+   ```
+
+3. **Production run that aborts on a mismatch** — send probe traffic to find
+   the real capacity cliff, and exit `1` (failing a CI gate) if the measured
+   ceiling is below the context you claimed:
+
+   ```bash
+   uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
+   ```
+
+   Exit code `1` means "advertised capacity does not match measured"; `0` is
+   clean. Use this as a gate to stop a deploy that would silently truncate
+   prompts beyond the server's real limit.
+
 ## Error handling and security
 
 - **Unreachable server**: llmprobe verifies the server is reachable before
