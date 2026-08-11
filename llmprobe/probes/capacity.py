@@ -88,6 +88,12 @@ _CANARY_INSTRUCTION = (
     "Reply with exactly that first word and nothing else."
 )
 
+# Model name sent in probe requests when the caller has not resolved a real
+# model from the server config (see :func:`probe_capacity`). The mock is not a
+# source of truth about a real server, so this is an honest neutral placeholder
+# rather than a value borrowed from the test fixtures.
+_DEFAULT_MODEL = "default"
+
 
 def _resolve_probe_path(endpoint: Endpoint, backend: Backend) -> str:
     """Map an ``Endpoint`` selection onto the concrete probe path to exercise.
@@ -157,7 +163,11 @@ async def _exact_tokenization_available(
 
 
 async def _vllm_prompt_tokens_exact(
-    client: httpx.AsyncClient, base_url: str, endpoint: str, timeout: httpx.Timeout
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    model: str,
+    timeout: httpx.Timeout,
 ) -> bool:
     """For vLLM, verify a probe length against the server's own count.
 
@@ -169,7 +179,7 @@ async def _vllm_prompt_tokens_exact(
     """
     n = LO
     base = base_url.rstrip("/")
-    body: dict = {"input": " ".join([_FILLER] * n), "model": "vllm-probe"}
+    body: dict = {"input": " ".join([_FILLER] * n), "model": model}
     resp = await client.post(f"{base}{endpoint}", json=body, timeout=timeout)
     if resp.status_code != 200:
         return False
@@ -195,13 +205,14 @@ async def _post_embed(
     base_url: str,
     endpoint: str,
     prompt: str,
+    model: str,
     timeout: httpx.Timeout,
 ) -> list[float] | None:
     """POST one embedding to ``endpoint``; return the vector on 200 else ``None``."""
     base = base_url.rstrip("/")
     resp = await client.post(
         f"{base}{endpoint}",
-        json={"input": prompt, "model": "embed-mock"},
+        json={"input": prompt, "model": model},
         timeout=timeout,
     )
     if resp.status_code != 200:
@@ -257,6 +268,7 @@ async def _embed_classify(
     base_url: str,
     endpoint: str,
     n: int,
+    model: str,
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> str:
@@ -278,7 +290,12 @@ async def _embed_classify(
     requests[0] += 1
     try:
         va = await _post_embed(
-            client, base_url, endpoint, a, httpx.Timeout(_scale_timeout(timeout, n))
+            client,
+            base_url,
+            endpoint,
+            a,
+            model,
+            httpx.Timeout(_scale_timeout(timeout, n)),
         )
     except httpx.TransportError as exc:
         if isinstance(exc, _PROPAGATED_TRANSPORT):
@@ -287,7 +304,12 @@ async def _embed_classify(
     requests[0] += 1
     try:
         vb = await _post_embed(
-            client, base_url, endpoint, b, httpx.Timeout(_scale_timeout(timeout, n))
+            client,
+            base_url,
+            endpoint,
+            b,
+            model,
+            httpx.Timeout(_scale_timeout(timeout, n)),
         )
     except httpx.TransportError as exc:
         if isinstance(exc, _PROPAGATED_TRANSPORT):
@@ -311,6 +333,7 @@ async def _post_chat(
     base_url: str,
     path: str,
     prompt: str,
+    model: str,
     timeout: httpx.Timeout,
 ) -> str | None:
     """POST one chat message to ``path``; return the reply content on 200 else ``None``.
@@ -326,7 +349,7 @@ async def _post_chat(
     resp = await client.post(
         f"{base}{path}",
         json={
-            "model": "chat-mock",
+            "model": model,
             "messages": [
                 {"role": "system", "content": _CANARY_INSTRUCTION},
                 {"role": "user", "content": prompt},
@@ -347,6 +370,7 @@ async def _chat_classify(
     base_url: str,
     path: str,
     n: int,
+    model: str,
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> str:
@@ -372,7 +396,12 @@ async def _chat_classify(
     requests[0] += 1
     try:
         reply = await _post_chat(
-            client, base_url, path, prompt, httpx.Timeout(_scale_timeout(timeout, n))
+            client,
+            base_url,
+            path,
+            prompt,
+            model,
+            httpx.Timeout(_scale_timeout(timeout, n)),
         )
     except httpx.TransportError as exc:
         if isinstance(exc, _PROPAGATED_TRANSPORT):
@@ -542,6 +571,7 @@ async def _binary_search_chat(
     endpoint: str,
     ceiling: int,
     exact: bool,
+    model: str,
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> CapacityResult:
@@ -551,7 +581,9 @@ async def _binary_search_chat(
     probes each length via the canary-head method described there.
     """
     async def classify(n: int) -> str:
-        return await _chat_classify(client, base_url, endpoint, n, requests, timeout)
+        return await _chat_classify(
+            client, base_url, endpoint, n, model, requests, timeout
+        )
 
     return await _binary_search(classify, endpoint, ceiling, exact, requests)
 
@@ -562,6 +594,7 @@ async def probe_capacity(
     endpoint: Endpoint,
     ceiling: int = DEFAULT_CEILING,
     backend: Backend = Backend.GENERIC,
+    model: str | None = None,
     timeout: float | None = None,
     safe: bool = False,
 ) -> CapacityResult | None:
@@ -574,11 +607,13 @@ async def probe_capacity(
     request so no hardcoded endpoint path leaks into the probe.
 
     ``backend`` is accepted for API symmetry and for ``AUTO`` resolution; the
-    request shapes we send are stable across the supported backends. ``timeout``,
-    when given, bounds every HTTP request the probe issues (defaulting to the
-    client's configured timeout when omitted). ``safe``, when True, skips the
-    probe entirely and returns ``None``: the caller then reports no measured
-    capacity rather than a fabricated value.
+    request shapes we send are stable across the supported backends. ``model``,
+    when given, names the model to request (the config's ``model_id``); when
+    omitted the probe falls back to a neutral placeholder rather than a
+    mock-derived name. ``timeout``, when given, bounds every HTTP request the
+    probe issues (defaulting to the client's configured timeout when omitted).
+    ``safe``, when True, skips the probe entirely and returns ``None``: the
+    caller then reports no measured capacity rather than a fabricated value.
     """
     if safe:
         return None
@@ -587,6 +622,7 @@ async def probe_capacity(
     )
     requests = [0]
     path = _resolve_probe_path(endpoint, backend)
+    probe_model = model or _DEFAULT_MODEL
 
     # Can we verify our prompt lengths against the server's own tokenizer? If
     # not, every reported count is a nominal estimate and token_count_exact must
@@ -595,19 +631,19 @@ async def probe_capacity(
     # we verify against that field instead of /tokenize.
     if backend == Backend.VLLM:
         exact = await _vllm_prompt_tokens_exact(
-            client, base_url, path, per_request
+            client, base_url, path, probe_model, per_request
         )
     else:
         exact = await _exact_tokenization_available(client, base_url, per_request)
 
     if path.rstrip("/").endswith("/chat/completions"):
         return await _binary_search_chat(
-            client, base_url, path, ceiling, exact, requests, per_request
+            client, base_url, path, ceiling, exact, probe_model, requests, per_request
         )
 
     async def classify(n: int) -> str:
         return await _embed_classify(
-            client, base_url, path, n, requests, per_request
+            client, base_url, path, n, probe_model, requests, per_request
         )
 
     return await _binary_search(classify, path, ceiling, exact, requests)
