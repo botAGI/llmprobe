@@ -9,9 +9,9 @@ compare the returned vectors. A server that silently drops the tail returns
 identical vectors (cosine similarity effectively 1.0) regardless of the
 differing tail — we call that ``SILENT_TRUNCATION``. Only when the two
 responses genuinely differ do we accept the length. A 4xx/5xx is
-``HARD_ERROR``. For ``/v1/chat/completions`` we plant a unique canary at the
-start and ask the model to repeat the first word; an absent canary reveals
-head truncation.
+``HARD_ERROR``. The same two-prompt method is used for
+``/v1/chat/completions``: two prompts differing only in their final token
+whose replies are identical reveal a silently dropped tail.
 
 Imports only from :mod:`llmprobe.models`.
 """
@@ -236,6 +236,36 @@ async def _embed_classify(
     return "accepted"
 
 
+async def _post_chat(
+    client: httpx.AsyncClient,
+    base_url: str,
+    path: str,
+    prompt: str,
+    timeout: httpx.Timeout,
+) -> str | None:
+    """POST one chat message to ``path``; return the reply content on 200 else ``None``.
+
+    Transport failures propagate (an unreachable server must surface as an
+    ``httpx.HTTPError``, never a fabricated ``hard_error``); only a non-200
+    status or an unparsable body yields ``None``.
+    """
+    base = base_url.rstrip("/")
+    resp = await client.post(
+        f"{base}{path}",
+        json={
+            "model": "chat-mock",
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=timeout,
+    )
+    if resp.status_code != 200:
+        return None
+    try:
+        return resp.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
 async def _chat_classify(
     client: httpx.AsyncClient,
     base_url: str,
@@ -244,38 +274,37 @@ async def _chat_classify(
     requests: list[int],
     timeout: httpx.Timeout,
 ) -> str:
-    """Classify length ``n`` against the configured chat path via a head canary.
+    """Classify length ``n`` against the configured chat path.
 
-    A unique canary is planted at the very start of the prompt and the model is
-    asked to repeat the first word. If the canary is absent from the reply the
-    head was truncated (``silent_truncation``). A 4xx/5xx is ``hard_error``.
-
-    The canary must be the FIRST token of the canary payload, so that "the
-    first word of this prompt" is unambiguous. The full canary prompt is sent
-    as the single user message so the server's notion of input length tracks
-    exactly the bytes we probe.
+    Two identical-length prompts differing only in the final token are sent as
+    the single user message, so the server's notion of input length tracks
+    exactly the bytes we probe. A 4xx/5xx is ``hard_error``; effectively
+    identical replies are ``silent_truncation`` — a server that drops the tail
+    returns the same reply whatever the differing final token; genuinely
+    different replies are ``accepted``.
     """
-    base = base_url.rstrip("/")
-    tail = await _n_token_prompt(
+    tail_a = await _n_token_prompt(
         client, base_url, max(n - 1, 0), _FINAL_A, timeout
     )
-    body = f"{_CANARY} " + tail
-    requests[0] += 1
-    resp = await client.post(
-        f"{base}{path}",
-        json={
-            "model": "chat-mock",
-            "messages": [{"role": "user", "content": body}],
-        },
-        timeout=timeout,
+    tail_b = await _n_token_prompt(
+        client, base_url, max(n - 1, 0), _FINAL_B, timeout
     )
-    if resp.status_code != 200:
+    a = f"{_CANARY} " + tail_a
+    b = f"{_CANARY} " + tail_b
+    _assert_differ_only_in_final_token(a, b)
+    requests[0] += 1
+    ra = await _post_chat(client, base_url, path, a, timeout)
+    requests[0] += 1
+    rb = await _post_chat(client, base_url, path, b, timeout)
+    if ra is None or rb is None:
         return "hard_error"
-    try:
-        content = resp.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
-        return "hard_error"
-    if _CANARY not in str(content):
+    if ra == rb:
+        logger.info(
+            "%s confirmed for chat: prompt tail silently discarded (a==b at "
+            "length %d); differing final token produced identical replies",
+            _TRUNCATION_FLAG,
+            n,
+        )
         return "silent_truncation"
     return "accepted"
 
@@ -383,8 +412,8 @@ async def _binary_search_chat(
     """Binary-search the ``/v1/chat/completions`` cliff.
 
     Runs the shared binary-search loop against :func:`_chat_classify`, which
-    probes each length via a head canary rather than the two-prompt embedding
-    method used for the embeddings endpoint.
+    probes each length via the same two-prompt tail method used for the
+    embeddings endpoint.
     """
     async def classify(n: int) -> str:
         return await _chat_classify(client, base_url, endpoint, n, requests, timeout)
@@ -402,11 +431,11 @@ async def probe_capacity(
 ) -> CapacityResult:
     """Determine the largest accepted input length and how the server fails.
 
-    Dispatches to a per-endpoint binary search: a head-canary search over the
-    chat path and the two-prompt search over the embeddings path. ``endpoint``
-    selects which request path to exercise; ``AUTO`` resolves against the
-    detected ``backend``. The resolved path is threaded into every request so
-    no hardcoded endpoint path leaks into the probe.
+    Dispatches to a per-endpoint binary search: a two-prompt tail check over
+    the chat path and the two-prompt search over the embeddings path.
+    ``endpoint`` selects which request path to exercise; ``AUTO`` resolves
+    against the detected ``backend``. The resolved path is threaded into every
+    request so no hardcoded endpoint path leaks into the probe.
 
     ``backend`` is accepted for API symmetry and for ``AUTO`` resolution; the
     request shapes we send are stable across the supported backends. ``timeout``,
