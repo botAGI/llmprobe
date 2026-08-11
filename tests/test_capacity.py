@@ -77,6 +77,25 @@ async def test_honest_server_accepts_ceiling() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ceiling_accepted_max_is_reported_as_unmeasured() -> None:
+    """When the ceiling is accepted, the true maximum lies above it.
+
+    ``cliff_behavior`` is ``ACCEPTED`` and ``max_accepted_tokens`` is the
+    ceiling — but that ceiling is only a lower bound on the real capacity,
+    never a measured maximum. Its provenance MUST be ``unknown`` so the report
+    does not claim a measurement the probe does not have.
+    """
+    server = make_mock_server(max_tokens=8192, behavior="honest")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
+        )
+    assert result.max_accepted_tokens == 8192
+    assert result.cliff_behavior == CliffBehavior.ACCEPTED
+    assert result.max_accepted_source == Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_status_only_classifier_is_insufficient() -> None:
     """Prove the detector is not vacuous: a status-only classifier cannot
     distinguish silent truncation from honest.

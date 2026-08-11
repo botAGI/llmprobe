@@ -365,13 +365,21 @@ async def _binary_search(
     When every probed length in ``[LO, ceiling]`` is rejected, no length was
     measured as accepted; ``max_accepted_tokens`` carries a lower-bound value
     that was never probed and ``max_accepted_source`` is set to ``UNKNOWN`` so
-    the report does not claim a measurement it does not have.
+    the report does not claim a measurement it does not have. Symmetrically,
+    when ``ceiling`` itself is accepted the true maximum lies above ``ceiling``
+    and ``max_accepted_source`` is ``UNKNOWN`` — ``ceiling`` is only a lower
+    bound, never a measured maximum.
     """
-    # If the ceiling itself is accepted there is no cliff within range.
+    # If the ceiling itself is accepted there is no cliff within range. The
+    # true maximum is then unknown — it lies somewhere above ``ceiling`` — so
+    # ``ceiling`` is only a lower bound, never a measured maximum. We therefore
+    # mark ``max_accepted_source`` UNKNOWN rather than report a measurement the
+    # probe does not have (mirrors the below-``LO`` handling above).
     if await classify(ceiling) == "accepted":
         return CapacityResult(
             endpoint=endpoint,
             max_accepted_tokens=ceiling,
+            max_accepted_source=Provenance.UNKNOWN,
             token_count_exact=exact,
             cliff_behavior=CliffBehavior.ACCEPTED,
             probe_requests_used=requests[0],
