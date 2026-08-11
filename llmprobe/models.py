@@ -79,10 +79,13 @@ class EffectiveConfig(BaseModel):
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
     total_slots: Optional[int] = None
+    n_ctx: Optional[int] = None
 
     sources: dict[str, Provenance] = Field(
         default_factory=dict,
-        description="Provenance marker for each numeric field name.",
+        description=(
+            "Provenance marker for each numeric field name, including n_ctx."
+        ),
     )
 
 

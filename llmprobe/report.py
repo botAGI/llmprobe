@@ -129,6 +129,9 @@ def _to_json_object(report: ProbeReport) -> dict[str, Any]:
         "total_slots": _pv(
             config.total_slots, _config_provenance(config, "total_slots")
         ),
+        "n_ctx": _pv(
+            config.n_ctx, _config_provenance(config, "n_ctx")
+        ),
     }
 
     capacity = [
