@@ -154,6 +154,27 @@ def test_probe_ceiling_uses_claimed_context_reference(
     assert cap["cliff_behavior"]["value"] == CliffBehavior.ACCEPTED.value
 
 
+def test_claimed_ctx_matching_measured_cliff_exits_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``--claimed-ctx`` equal to the measured cliff => exit 0 (no mismatch).
+
+    The mismatch check only fires when the measured ``max_accepted_tokens`` is
+    strictly below the claimed context. When the claim exactly matches what the
+    server truncates at, nothing is a mismatch and the process must succeed.
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--claimed-ctx", "512", "--probe", "--json"]
+    )
+    assert result.exit_code == 0
+
+    report = json.loads(result.stdout)
+    cap = report["capacity"][0]
+    assert cap["max_accepted_tokens"]["value"] == 512
+    assert report["findings"] == []
+
+
 def test_unreachable_server_exits_2() -> None:
     """A server that cannot be reached => exit 2 with no report."""
     result = runner.invoke(cli.app, ["http://127.0.0.1:1", "--json"])
