@@ -65,6 +65,27 @@ def redact_base_url(base_url: str) -> str:
     return redact_userinfo(base_url)
 
 
+def _coerce_endpoint(endpoint: Endpoint | str) -> Endpoint:
+    """Normalize a raw ``--endpoint`` value into an ``Endpoint`` member.
+
+    The README documents ``--endpoint chat`` (and ``embeddings`` / ``auto``) as
+    valid selections. Because the enum is a ``str``-backed ``Endpoint``, a
+    string value such as ``'chat'`` is coerced here to ``Endpoint.CHAT`` so the
+    CLI accepts the documented spelling rather than demanding ``Endpoint.CHAT``.
+    """
+    if isinstance(endpoint, Endpoint):
+        return endpoint
+    if isinstance(endpoint, str):
+        try:
+            return Endpoint(endpoint.lower())
+        except ValueError:
+            raise ValueError(
+                f"unknown endpoint: {endpoint!r} (expected one of "
+                f"{[e.value for e in Endpoint]})"
+            ) from None
+    raise ValueError(f"unknown endpoint: {endpoint!r}")
+
+
 def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
     """Map an ``Endpoint`` selection onto a concrete probe path.
 
@@ -155,11 +176,22 @@ async def probe(
     base_url: str,
     claimed_ctx: int | None,
     safe: bool = True,
-    endpoint: Endpoint = Endpoint.AUTO,
+    endpoint: Endpoint | str = Endpoint.AUTO,
     timeout: float = DEFAULT_TIMEOUT,
     api_key: str | None = None,
+    *,
+    chat: bool = False,
 ) -> ProbeReport:
-    """Run the configured read and optional capacity probe, then assemble a report."""
+    """Run the configured read and optional capacity probe, then assemble a report.
+
+    ``endpoint`` selects which endpoint to exercise and may be given either as
+    an ``Endpoint`` member or as its documented string spelling (``"chat"``,
+    ``"embeddings"``, ``"auto"``); matching strings are coerced to the
+    ``Endpoint`` member. For the README-promised ``--endpoint chat`` the
+    ``chat=True`` shorthand is an equivalent, explicit way to select the chat
+    endpoint (``Endpoint.CHAT``); when given, it takes precedence.
+    """
+    endpoint = Endpoint.CHAT if chat else _coerce_endpoint(endpoint)
     async with _make_client(base_url, api_key, timeout) as client:
         try:
             await _assert_reachable(client)
