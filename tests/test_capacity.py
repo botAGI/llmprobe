@@ -41,7 +41,7 @@ async def test_hard_error_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -58,7 +58,7 @@ async def test_silent_truncation_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="silent_truncation")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
@@ -93,7 +93,7 @@ async def test_silent_truncation_last_token_difference() -> None:
     server = make_mock_server(max_tokens=512, behavior="silent_truncation")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
 
     assert result.max_accepted_tokens == 512
@@ -106,7 +106,7 @@ async def test_honest_server_accepts_ceiling() -> None:
     server = make_mock_server(max_tokens=8192, behavior="honest")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
@@ -124,7 +124,7 @@ async def test_ceiling_accepted_max_is_reported_as_unmeasured() -> None:
     server = make_mock_server(max_tokens=8192, behavior="honest")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
@@ -182,7 +182,7 @@ async def test_below_lo_capacity_is_reported_as_unmeasured() -> None:
     server = make_mock_server(max_tokens=10, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_source == Provenance.UNKNOWN
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -196,7 +196,7 @@ async def test_token_count_exact_when_tokenizer_available() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.token_count_exact is True
 
@@ -212,7 +212,7 @@ async def test_token_count_is_estimate_when_tokenizer_unavailable() -> None:
     )
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.token_count_exact is False
 
@@ -231,7 +231,7 @@ async def test_vllm_prompt_tokens_yields_exact_count() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.VLLM
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.VLLM, model="mock"
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -244,7 +244,7 @@ async def test_chat_hard_error_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -262,7 +262,7 @@ async def test_chat_silent_truncation_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="silent_truncation")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
@@ -275,7 +275,7 @@ async def test_chat_honest_server_accepts_ceiling() -> None:
     server = make_mock_server(max_tokens=8192, behavior="honest")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
@@ -425,7 +425,7 @@ async def test_binary_search_probe_request_count_is_logarithmic() -> None:
     server = make_mock_server(max_tokens=cliff, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.max_accepted_tokens == cliff
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -498,6 +498,7 @@ async def test_unreachable_server_raises_http_error() -> None:
                 EMBED_ENDPOINT,
                 ceiling=32768,
                 backend=Backend.LLAMACPP,
+                model="mock",
             )
 
 
@@ -553,7 +554,7 @@ async def test_endpoint_selection_routes_probe_to_chat_path() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, Endpoint.CHAT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, Endpoint.CHAT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
     assert result.endpoint == CHAT
     assert result.max_accepted_tokens == 512
@@ -570,7 +571,7 @@ async def test_endpoint_selection_routes_probe_to_embeddings_path() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, Endpoint.EMBEDDINGS, ceiling=32768, backend=Backend.VLLM
+            client, BASE_URL, Endpoint.EMBEDDINGS, ceiling=32768, backend=Backend.VLLM, model="mock"
         )
     assert result.endpoint == EMBEDDINGS
     assert result.max_accepted_tokens == 512

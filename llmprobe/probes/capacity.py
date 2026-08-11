@@ -88,12 +88,6 @@ _CANARY_INSTRUCTION = (
     "Reply with exactly that first word and nothing else."
 )
 
-# Model name sent in probe requests when the caller has not resolved a real
-# model from the server config (see :func:`probe_capacity`). The mock is not a
-# source of truth about a real server, so this is an honest neutral placeholder
-# rather than a value borrowed from the test fixtures.
-_DEFAULT_MODEL = "default"
-
 
 def _resolve_probe_path(endpoint: Endpoint, backend: Backend) -> str:
     """Map an ``Endpoint`` selection onto the concrete probe path to exercise.
@@ -607,22 +601,26 @@ async def probe_capacity(
     request so no hardcoded endpoint path leaks into the probe.
 
     ``backend`` is accepted for API symmetry and for ``AUTO`` resolution; the
-    request shapes we send are stable across the supported backends. ``model``,
-    when given, names the model to request (the config's ``model_id``); when
-    omitted the probe falls back to a neutral placeholder rather than a
-    mock-derived name. ``timeout``, when given, bounds every HTTP request the
-    probe issues (defaulting to the client's configured timeout when omitted).
-    ``safe``, when True, skips the probe entirely and returns ``None``: the
-    caller then reports no measured capacity rather than a fabricated value.
+    request shapes we send are stable across the supported backends. ``model``
+    names the model to request (the config's ``model_id``, resolved by the
+    adapter during config). It is threaded into every request so the probe
+    never invents its own model name. When ``model`` is not available the probe
+    is skipped and ``None`` is returned — an honest ``UNKNOWN`` capacity — the
+    request name is never substituted with a placeholder. ``timeout``, when
+    given, bounds every HTTP request the probe issues (defaulting to the
+    client's configured timeout when omitted). ``safe``, when True, skips the
+    probe entirely and returns ``None``: the caller then reports no measured
+    capacity rather than a fabricated value.
     """
     if safe:
+        return None
+    if model is None:
         return None
     per_request = (
         httpx.Timeout(timeout) if timeout is not None else client.timeout
     )
     requests = [0]
     path = _resolve_probe_path(endpoint, backend)
-    probe_model = model or _DEFAULT_MODEL
 
     # Can we verify our prompt lengths against the server's own tokenizer? If
     # not, every reported count is a nominal estimate and token_count_exact must
@@ -631,19 +629,19 @@ async def probe_capacity(
     # we verify against that field instead of /tokenize.
     if backend == Backend.VLLM:
         exact = await _vllm_prompt_tokens_exact(
-            client, base_url, path, probe_model, per_request
+            client, base_url, path, model, per_request
         )
     else:
         exact = await _exact_tokenization_available(client, base_url, per_request)
 
     if path.rstrip("/").endswith("/chat/completions"):
         return await _binary_search_chat(
-            client, base_url, path, ceiling, exact, probe_model, requests, per_request
+            client, base_url, path, ceiling, exact, model, requests, per_request
         )
 
     async def classify(n: int) -> str:
         return await _embed_classify(
-            client, base_url, path, n, probe_model, requests, per_request
+            client, base_url, path, n, model, requests, per_request
         )
 
     return await _binary_search(classify, path, ceiling, exact, requests)
