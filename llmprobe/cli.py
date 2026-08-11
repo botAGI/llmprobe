@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from enum import Enum
 from typing import Annotated
 
 import httpx
@@ -31,6 +30,7 @@ from llmprobe.models import (
     Backend,
     CapacityResult,
     CliffBehavior,
+    Endpoint,
     Finding,
     ProbeReport,
     Severity,
@@ -55,14 +55,6 @@ _USERINFO_RE = re.compile(r"(//[^/@]+@)")
 
 #: Default per-request timeout in seconds (applied to every HTTP request).
 DEFAULT_TIMEOUT = 10.0
-
-
-class Endpoint(str, Enum):
-    """Which inference endpoint the capacity probe should exercise."""
-
-    EMBEDDINGS = "embeddings"
-    CHAT = "chat"
-    AUTO = "auto"
 
 
 def redact_base_url(base_url: str) -> str:
@@ -182,7 +174,7 @@ async def probe(
             cap = await probe_capacity(
                 client,
                 base_url,
-                _resolve_path(endpoint, config.backend),
+                endpoint,
                 ceiling=DEFAULT_CEILING,
                 backend=config.backend,
                 timeout=timeout,

@@ -17,14 +17,13 @@ from llmprobe.backends.vllm import (
     extract_prompt_tokens,
     read_config,
 )
-from llmprobe.models import Backend, Provenance
+from llmprobe.models import Backend, Endpoint, Provenance
 from llmprobe.probes.capacity import probe_capacity
 
 from tests.mocks.server import make_mock_server
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE_URL = "http://vllm.test"
-EMBEDDINGS = "/v1/embeddings"
 
 
 def _fixture_text(name: str) -> str:
@@ -441,7 +440,7 @@ async def test_vllm_probe_uses_prompt_tokens_exact_count() -> None:
         result = await probe_capacity(
             client,
             BASE_URL,
-            EMBEDDINGS,
+            Endpoint.EMBEDDINGS,
             ceiling=32768,
             backend=Backend.VLLM,
         )

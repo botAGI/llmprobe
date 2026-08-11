@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llmprobe.models import Backend, CliffBehavior, Provenance
+from llmprobe.models import Backend, CliffBehavior, Endpoint, Provenance
 from llmprobe.probes.capacity import probe_capacity
 
 from tests.mocks.server import make_mock_server
@@ -24,6 +24,10 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 EMBEDDINGS = "/v1/embeddings"
 
 CHAT = "/v1/chat/completions"
+
+EMBED_ENDPOINT = Endpoint.EMBEDDINGS
+
+CHAT_ENDPOINT = Endpoint.CHAT
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -37,7 +41,7 @@ async def test_hard_error_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -54,7 +58,7 @@ async def test_silent_truncation_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="silent_truncation")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
@@ -66,7 +70,7 @@ async def test_honest_server_accepts_ceiling() -> None:
     server = make_mock_server(max_tokens=8192, behavior="honest")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=8192, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
@@ -123,7 +127,7 @@ async def test_below_lo_capacity_is_reported_as_unmeasured() -> None:
     server = make_mock_server(max_tokens=10, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_source == Provenance.UNKNOWN
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -137,7 +141,7 @@ async def test_token_count_exact_when_tokenizer_available() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.token_count_exact is True
 
@@ -153,7 +157,7 @@ async def test_token_count_is_estimate_when_tokenizer_unavailable() -> None:
     )
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.token_count_exact is False
 
@@ -172,7 +176,7 @@ async def test_vllm_prompt_tokens_yields_exact_count() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.VLLM
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.VLLM
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -185,7 +189,7 @@ async def test_chat_hard_error_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -203,7 +207,7 @@ async def test_chat_silent_truncation_server_cliff() -> None:
     server = make_mock_server(max_tokens=512, behavior="silent_truncation")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 512
     assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
@@ -216,7 +220,7 @@ async def test_chat_honest_server_accepts_ceiling() -> None:
     server = make_mock_server(max_tokens=8192, behavior="honest")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, CHAT, ceiling=8192, backend=Backend.LLAMACPP
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=8192, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == 8192
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
@@ -325,7 +329,7 @@ async def test_binary_search_probe_request_count_is_logarithmic() -> None:
     server = make_mock_server(max_tokens=cliff, behavior="hard_error")
     async with _client(server) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBEDDINGS, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
         )
     assert result.max_accepted_tokens == cliff
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -395,7 +399,64 @@ async def test_unreachable_server_raises_http_error() -> None:
             await probe_capacity(
                 client,
                 BASE_URL,
-                EMBEDDINGS,
+                EMBED_ENDPOINT,
                 ceiling=32768,
                 backend=Backend.LLAMACPP,
             )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_selection_routes_probe_to_chat_path() -> None:
+    """``Endpoint.CHAT`` must route the probe to the chat path, not embeddings.
+
+    The README promises ``--endpoint chat`` exercises the chat endpoint. When
+    the caller selects ``CHAT`` the probe must send its requests to the
+    ``/v1/chat/completions`` path; the resolved path must be reflected in the
+    reported ``CapacityResult.endpoint`` so the honest value is recorded.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, Endpoint.CHAT, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result.endpoint == CHAT
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+
+
+@pytest.mark.asyncio
+async def test_endpoint_selection_routes_probe_to_embeddings_path() -> None:
+    """``Endpoint.EMBEDDINGS`` must route the probe to the embeddings path.
+
+    An explicit ``EMBEDDINGS`` selection must be honoured directly and the
+    resolved path must be reported as the exercised endpoint in the result.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, Endpoint.EMBEDDINGS, ceiling=32768, backend=Backend.VLLM
+        )
+    assert result.endpoint == EMBEDDINGS
+    assert result.max_accepted_tokens == 512
+    assert result.cliff_behavior == CliffBehavior.HARD_ERROR
+
+
+@pytest.mark.asyncio
+async def test_endpoint_auto_resolves_per_backend() -> None:
+    """``Endpoint.AUTO`` must resolve to the backend's default probe path.
+
+    The README promises the default ``auto`` selection resolves per backend and
+    is not silently collapsed to embeddings for every backend. Each backend's
+    default path must be the path actually exercised and reported.
+    """
+    from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
+
+    for backend in Backend:
+        server = make_mock_server(max_tokens=512, behavior="hard_error")
+        async with _client(server) as client:
+            result = await probe_capacity(
+                client, BASE_URL, Endpoint.AUTO, ceiling=32768, backend=backend
+            )
+        assert result.endpoint == DEFAULT_PROBE_ENDPOINTS[backend], (
+            f"auto did not resolve to {backend}'s default probe path"
+        )
