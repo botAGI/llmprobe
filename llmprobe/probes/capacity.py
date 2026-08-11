@@ -110,12 +110,7 @@ async def _vllm_prompt_tokens_exact(
     n = LO
     base = base_url.rstrip("/")
     body: dict = {"input": " ".join([_FILLER] * n), "model": "vllm-probe"}
-    try:
-        resp = await client.post(
-            f"{base}{endpoint}", json=body, timeout=timeout
-        )
-    except httpx.HTTPError:
-        return False
+    resp = await client.post(f"{base}{endpoint}", json=body, timeout=timeout)
     if resp.status_code != 200:
         return False
     try:
@@ -144,14 +139,11 @@ async def _post_embed(
 ) -> list[float] | None:
     """POST one embedding to ``endpoint``; return the vector on 200 else ``None``."""
     base = base_url.rstrip("/")
-    try:
-        resp = await client.post(
-            f"{base}{endpoint}",
-            json={"input": prompt, "model": "embed-mock"},
-            timeout=timeout,
-        )
-    except httpx.HTTPError:
-        return None
+    resp = await client.post(
+        f"{base}{endpoint}",
+        json={"input": prompt, "model": "embed-mock"},
+        timeout=timeout,
+    )
     if resp.status_code != 200:
         return None
     try:
@@ -244,17 +236,14 @@ async def _chat_classify(
     )
     body = f"{_CANARY} " + tail
     requests[0] += 1
-    try:
-        resp = await client.post(
-            f"{base}/v1/chat/completions",
-            json={
-                "model": "chat-mock",
-                "messages": [{"role": "user", "content": body}],
-            },
-            timeout=timeout,
-        )
-    except httpx.HTTPError:
-        return "hard_error"
+    resp = await client.post(
+        f"{base}/v1/chat/completions",
+        json={
+            "model": "chat-mock",
+            "messages": [{"role": "user", "content": body}],
+        },
+        timeout=timeout,
+    )
     if resp.status_code != 200:
         return "hard_error"
     try:
