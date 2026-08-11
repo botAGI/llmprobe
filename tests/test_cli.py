@@ -70,13 +70,18 @@ def _invoke(
 
 def _all_cli_options() -> set[str]:
     cmd = typer.main.get_command(cli.app)
-    return {opt for p in cmd.params for opt in p.opts}
+    return {
+        opt
+        for p in cmd.params
+        for opt in list(p.opts) + list(getattr(p, "secondary_opts", []) or [])
+    }
 
 
 def test_cli_options_are_declared() -> None:
     opts = _all_cli_options()
     assert "--claimed-ctx" in opts
     assert "--probe" in opts
+    assert "--safe" in opts
     assert "--json" in opts
     assert "--endpoint" in opts
     assert "--api-key" in opts
@@ -104,13 +109,13 @@ def test_json_schema_prints_valid_json_and_exits_zero() -> None:
 def test_safe_is_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--safe`` is the default: no inference load is sent unless ``--probe``.
 
-    The ``--probe/--safe`` boolean option defaults to ``False`` (safe), and
+    The ``--safe/--probe`` boolean option defaults to ``True`` (safe), and
     with the default flags the report carries an empty ``capacity`` list,
     proving no probe requests were issued.
     """
     cmd = typer.main.get_command(cli.app)
-    probe_param = next(p for p in cmd.params if "--probe" in p.opts)
-    assert probe_param.default is False
+    safe_param = next(p for p in cmd.params if "--safe" in p.opts)
+    assert safe_param.default is True
 
     server = make_mock_server(max_tokens=512, behavior="honest")
     result = _invoke(server, monkeypatch, [BASE_URL, "--json"])

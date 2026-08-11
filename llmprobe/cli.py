@@ -226,16 +226,16 @@ def main(
             ),
         ),
     ] = None,
-    probe_flag: Annotated[
+    safe: Annotated[
         bool,
         typer.Option(
-            "--probe/--safe",
+            "--safe/--probe",
             help=(
-                "--probe sends inference load to find the real capacity cliff; "
-                "--safe (the default) reads configuration only."
+                "--safe (the default) reads configuration only; "
+                "--probe sends inference load to find the real capacity cliff."
             ),
         ),
-    ] = False,
+    ] = True,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Emit JSON instead of the markdown card."),
@@ -278,7 +278,7 @@ def main(
             probe(
                 base_url,
                 claimed_ctx,
-                safe=not probe_flag,
+                safe=safe,
                 endpoint=endpoint,
                 timeout=timeout,
                 api_key=api_key,
