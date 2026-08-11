@@ -18,6 +18,7 @@ Imports only from :mod:`llmprobe.models`.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import httpx
@@ -26,9 +27,17 @@ from llmprobe.backends.vllm import extract_prompt_tokens
 from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
 from llmprobe.tokens import _tokenize
 
+logger = logging.getLogger(__name__)
+
 LO = 16
 DEFAULT_CEILING = 32768
 COSINE_SIMILARITY_THRESHOLD = 0.9999
+
+# Surface a single, greppable flag when identical embeddings confirm that the
+# server silently discarded the differing tail. The value is a measured fact:
+# the two prompts were verified to differ only in the final token and the
+# server still returned identical vectors.
+_TRUNCATION_FLAG = "silent_truncation"
 
 _FILLER = "tok"
 _FINAL_A = "llmprobeFinalA"
@@ -164,6 +173,12 @@ async def _embed_classify(
     if va is None or vb is None:
         return "hard_error"
     if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
+        logger.info(
+            "%s confirmed: prompt tail silently discarded (a==b at length %d); "
+            "differing final token produced identical embeddings",
+            _TRUNCATION_FLAG,
+            n,
+        )
         return "silent_truncation"
     return "accepted"
 
