@@ -273,6 +273,28 @@ def test_endpoint_chat_resolves_to_chat_completions() -> None:
         )
 
 
+def test_endpoint_chat_drives_the_chat_capacity_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--endpoint chat`` must genuinely exercise the chat completions cliff.
+
+    The README promises ``--endpoint chat`` probes the chat endpoint. That is
+    only true if the selected endpoint flows all the way into
+    ``probe_capacity`` — the reported capacity must carry the
+    ``/v1/chat/completions`` path, not an embeddings path. This is an
+    end-to-end wiring check (not just ``_resolve_path`` in isolation).
+    """
+    server = make_mock_server(max_tokens=512, behavior="honest")
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--endpoint", "chat", "--probe", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    report = json.loads(result.stdout)
+    assert report["capacity"] != []
+    assert report["capacity"][0]["endpoint"]["value"] == "/v1/chat/completions"
+
+
 def test_auto_endpoints_are_distinct_per_backend() -> None:
     """Per-backend auto defaults must not all be identical.
 
