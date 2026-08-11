@@ -154,10 +154,10 @@ async def _chat_classify(
     asked to repeat the first word. If the canary is absent from the reply the
     head was truncated (``silent_truncation``). A 4xx/5xx is ``hard_error``.
 
-    The canary must be the FIRST token of the canary message, so that
-    "the first word of this prompt" is unambiguous; the instruction that asks
-    the model to repeat it is sent as a separate preceding message so the
-    server's notion of input length tracks only the canary payload.
+    The canary must be the FIRST token of the canary payload, so that "the
+    first word of this prompt" is unambiguous. The full canary prompt is sent
+    as the single user message so the server's notion of input length tracks
+    exactly the bytes we probe.
     """
     base = base_url.rstrip("/")
     body = f"{_CANARY} " + _n_token_prompt(max(n - 1, 0), _FINAL_A)
@@ -166,16 +166,8 @@ async def _chat_classify(
         resp = await client.post(
             f"{base}/v1/chat/completions",
             json={
-                "model": "mock",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": (
-                            "Repeat the first word of this prompt exactly."
-                        ),
-                    },
-                    {"role": "user", "content": body},
-                ],
+                "model": "chat-mock",
+                "messages": [{"role": "user", "content": body}],
             },
         )
     except httpx.HTTPError:
