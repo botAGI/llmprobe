@@ -44,10 +44,14 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
     ``default_generation_settings.n_ctx`` is PER-SLOT. ``n_batch`` and
     ``n_ubatch`` are not exposed over HTTP, so they stay ``None`` with
     provenance ``UNKNOWN``.
+
+    Each request uses the client's configured timeout (``client.timeout``,
+    set from the ``--timeout`` option) rather than a hardcoded value, so the
+    README promise that ``--timeout`` bounds every HTTP request holds here.
     """
     base = _base(base_url)
 
-    resp = await client.get(f"{base}/props", timeout=10.0)
+    resp = await client.get(f"{base}/props", timeout=client.timeout)
     resp.raise_for_status()
     payload = resp.json()
 
@@ -83,7 +87,7 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
 
     # /slots is optional: with --no-slots the server returns 501. Tolerate it.
     try:
-        slots_resp = await client.get(f"{base}/slots", timeout=10.0)
+        slots_resp = await client.get(f"{base}/slots", timeout=client.timeout)
         if slots_resp.status_code == 200:
             _source_slot_ctx(slots_resp.json(), merge)
     except httpx.HTTPError:
