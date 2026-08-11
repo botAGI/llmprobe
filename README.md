@@ -133,14 +133,13 @@ every value) over eyeballing the markdown card.
 
 llama.cpp (`llama-server`), vLLM, Ollama, and a generic OpenAI-compatible fallback.
 
-## Примеры вывода
+## Examples of output
 
-Ниже приведены примеры реального вывода инструмента. Всякий отчёт состоит из
-таблицы `Capability Report`, где для каждого свойства указаны заявленное
-(Claimed) и измеренное (Measured) значения, источник значения (Source) и вердикт
-(Verdict).
+Below are examples of real tool output. Every report consists of a `Capability
+Report` table, where for each property the claimed (Claimed) and measured
+(Measured) values, the value source (Source), and the verdict (Verdict) are given.
 
-Пример отчёта для сервера с корректной конфигурацией (`tests/golden/clean.md`):
+Example report for a server with a correct configuration (`tests/golden/clean.md`):
 
 ```text
 # Capability Report — http://localhost:8080
@@ -156,8 +155,8 @@ llama.cpp (`llama-server`), vLLM, Ollama, and a generic OpenAI-compatible fallba
 | cliff behaviour (/completion) | unknown | accepted | measured | ok |
 ```
 
-Пример отчёта, выявляющего проблему, — измеренный потолок ниже заявленного, а
-лишние токены молча отбрасываются (`tests/golden/silent-truncation.md`):
+Example report that reveals a problem — the measured ceiling is below the
+claimed one, and excess tokens are silently discarded (`tests/golden/silent-truncation.md`):
 
 ```text
 # Capability Report — http://localhost:8080
@@ -181,9 +180,9 @@ llama.cpp (`llama-server`), vLLM, Ollama, and a generic OpenAI-compatible fallba
 --batch-size 8192 --ubatch-size 8192
 ```
 
-Во втором примере важно различие между вердиктами `ok` и `truncated`: именно
-`truncated` означает, что сервер принял запрос, но отбросил хвост контекста, не
-сообщив об ошибке.
+In the second example, the distinction between the `ok` and `truncated`
+verdicts is important: it is `truncated` that means the server accepted the
+request but dropped the tail of the context without reporting an error.
 
 ## Ограничения инструмента
 
