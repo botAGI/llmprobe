@@ -535,6 +535,7 @@ async def test_request_timeout_reports_transport_error_as_unknown() -> None:
             EMBED_ENDPOINT,
             ceiling=32768,
             backend=Backend.LLAMACPP,
+            model="mock",
             timeout=0.001,
         )
     assert result.cliff_behavior == CliffBehavior.TRANSPORT_ERROR
@@ -592,8 +593,27 @@ async def test_endpoint_auto_resolves_per_backend() -> None:
         server = make_mock_server(max_tokens=512, behavior="hard_error")
         async with _client(server) as client:
             result = await probe_capacity(
-                client, BASE_URL, Endpoint.AUTO, ceiling=32768, backend=backend
+                client, BASE_URL, Endpoint.AUTO, ceiling=32768, backend=backend, model="mock"
             )
         assert result.endpoint == DEFAULT_PROBE_ENDPOINTS[backend], (
             f"auto did not resolve to {backend}'s default probe path"
         )
+
+
+@pytest.mark.asyncio
+async def test_no_model_returns_unknown_not_placeholder() -> None:
+    """Without a resolved model the probe returns ``UNKNOWN``, never a stub name.
+
+    The model request name comes from the adapter's ``EffectiveConfig``
+    (``model_id``) and is threaded into the probe as a parameter. When that
+    name is unavailable the probe must NOT substitute a placeholder like
+    ``default`` — a name the server never advertised is a fabrication. It
+    returns ``None``, which the caller reports as an honest unknown capacity.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+        )
+    assert result is None
+

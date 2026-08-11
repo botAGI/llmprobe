@@ -82,7 +82,7 @@ async def test_empty_200_body_degrades_to_hard_error() -> None:
 
     async with _embeddings_client(embed) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP, model="mock"
         )
 
     assert result.cliff_behavior == CliffBehavior.HARD_ERROR
@@ -103,7 +103,7 @@ async def test_zero_length_embedding_does_not_crash() -> None:
 
     async with _embeddings_client(embed) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP, model="mock"
         )
 
     assert isinstance(result.cliff_behavior, CliffBehavior)
@@ -131,7 +131,7 @@ async def test_mid_response_teardown_propagates_http_error() -> None:
     async with _embeddings_client(embed) as client:
         with pytest.raises(httpx.HTTPError):
             await probe_capacity(
-                client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP
+                client, BASE_URL, EMBED_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP, model="mock"
             )
 
 
@@ -153,7 +153,7 @@ async def test_ceiling_below_search_lower_bound_is_honest() -> None:
         transport=transport, base_url=BASE_URL
     ) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=8, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=8, backend=Backend.LLAMACPP, model="mock"
         )
 
     assert result.max_accepted_source == Provenance.UNKNOWN
@@ -176,7 +176,7 @@ async def test_server_accepting_everything_reports_unmeasured() -> None:
         transport=transport, base_url=BASE_URL
     ) as client:
         result = await probe_capacity(
-            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
         )
 
     assert result.max_accepted_tokens == 32768
