@@ -171,6 +171,10 @@ async def probe(
         findings.extend(check_slots(config, claimed_ctx))
 
         capacity: list[CapacityResult] = []
+        # Selecting an explicit endpoint (CHAT/EMBEDDINGS) requests inference on
+        # that endpoint, so probe traffic is sent even without --probe. Only the
+        # default AUTO selection honours the --safe/--probe suppression.
+        effective_safe = safe and endpoint is Endpoint.AUTO
         cap = await probe_capacity(
             client,
             base_url,
@@ -179,7 +183,7 @@ async def probe(
             backend=config.backend,
             model=config.model_id,
             timeout=timeout,
-            safe=safe,
+            safe=effective_safe,
         )
         if cap is not None:
             capacity.append(cap)
