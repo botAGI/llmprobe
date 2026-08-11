@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -227,6 +228,35 @@ _OUTCOME_TO_CLIFF = {
     "accepted": CliffBehavior.ACCEPTED,
 }
 
+Classifier = Callable[[int], Awaitable[str]]
+
+
+async def _probe_lo(
+    classify: Classifier, lo: int, hi: int
+) -> tuple[int, int]:
+    """Probe a midpoint and, if accepted, raise the lower bound.
+
+    ``mid`` is classified via ``classify`` (which dispatches to
+    ``_embed_classify``/``_chat_classify``). When accepted the cliff lies above
+    ``mid`` so ``lo`` is raised past it; otherwise ``mid`` becomes the new
+    exclusive upper bound. Returns the updated ``(lo, hi)``.
+    """
+    mid = (lo + hi) // 2
+    if await classify(mid) == "accepted":
+        return mid + 1, hi
+    return lo, mid - 1
+
+
+async def _probe_hi(classify: Classifier, n: int) -> str:
+    """Classify a single candidate length ``n`` above the accepted boundary.
+
+    ``n`` (``max_accepted + 1``) is the first length past the largest accepted
+    one — the cliff. Classifying it via ``classify`` (which dispatches to
+    ``_embed_classify``/``_chat_classify``) yields the outcome that becomes
+    ``cliff_behavior``. Returns the raw outcome string.
+    """
+    return await classify(n)
+
 
 async def _binary_search(
     classify,
@@ -260,17 +290,15 @@ async def _binary_search(
             probe_requests_used=requests[0],
         )
 
+    # Narrow ``[LO, ceiling]`` with a binary search over length ``n``: at each
+    # step probe the midpoint and move the accepted boundary accordingly. The
+    # search is logarithmic in the ceiling, never linear in the cliff position.
     lo, hi = LO, ceiling
     while lo <= hi:
-        mid = (lo + hi) // 2
-        outcome = await classify(mid)
-        if outcome == "accepted":
-            lo = mid + 1
-        else:
-            hi = mid - 1
+        lo, hi = await _probe_lo(classify, lo, hi)
 
     max_accepted = hi
-    cliff_outcome = await classify(max_accepted + 1)
+    cliff_outcome = await _probe_hi(classify, max_accepted + 1)
     return CapacityResult(
         endpoint=endpoint,
         max_accepted_tokens=max_accepted,
