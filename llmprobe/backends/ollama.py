@@ -32,7 +32,7 @@ async def _get_json(
     client: httpx.AsyncClient, url: str
 ) -> dict[str, Any] | None:
     try:
-        resp = await client.get(url)
+        resp = await client.get(url, timeout=client.timeout)
     except httpx.HTTPError:
         return None
     if resp.status_code != 200:
@@ -48,7 +48,7 @@ async def _post_json(
     client: httpx.AsyncClient, url: str, body: dict[str, Any]
 ) -> dict[str, Any] | None:
     try:
-        resp = await client.post(url, json=body)
+        resp = await client.post(url, json=body, timeout=client.timeout)
     except httpx.HTTPError:
         return None
     if resp.status_code != 200:
