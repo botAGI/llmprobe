@@ -184,27 +184,27 @@ In the second example, the distinction between the `ok` and `truncated`
 verdicts is important: it is `truncated` that means the server accepted the
 request but dropped the tail of the context without reporting an error.
 
-## Ограничения инструмента
+## Tool limitations
 
-Инструмент измеряет только ёмкость и конфигурацию сервера. Он **не** делает и
-**не** может делать следующего:
+The tool only measures the server's capacity and configuration. It does **not**
+and cannot do the following:
 
-- **Не поддерживает потоковую генерацию ответов.** Измеряется поведение
-  endpoints, а не streaming-протоколы (`text/event-stream`); скорость генерации
-  `tokens/s` и задержки первого токена не измеряются.
-- **Не измеряет качество ответов.** Инструмент не оценивает корректность,
-  осмысленность или полезность сгенерированного текста — только то, принял ли
-  сервер запрос и в каком объёме контекст реально обработан.
-- **Только метрики capacity/slots.** Отчёт ограничен такими свойствами, как
-  размер контекста, число слотов и максимальное число входных токенов. Прочие
-  характеристики (пропускная способность, стабильность при нагрузке, поведение
-  разных моделей) остаются за рамками.
-- **Вердикты `ok`/`truncated`/`mismatch` относятся к ёмкости, а не к
-  «правильности» модели.** Чистая конфигурация (`ok`) не гарантирует разумных
-  ответов — это лишь отсутствие молчаливой потери контекста.
+- **Does not support streaming response generation.** The behaviour of
+  endpoints is measured, not streaming protocols (`text/event-stream`);
+  generation `tokens/s` throughput and first-token latency are not measured.
+- **Does not measure response quality.** The tool does not assess the
+  correctness, meaningfulness, or usefulness of generated text — only whether
+  the server accepted the request and how much context it actually processed.
+- **Capacity/slots metrics only.** The report is limited to properties such as
+  context size, number of slots, and maximum number of input tokens. Other
+  characteristics (throughput, stability under load, behaviour of different
+  models) remain out of scope.
+- **The `ok`/`truncated`/`mismatch` verdicts refer to capacity, not to the
+  model's "correctness".** A clean configuration (`ok`) does not guarantee
+  sensible answers — it only means there is no silent context loss.
 
-Не следует трактовать «всё `ok`» как «сервер работает качественно». Это означает
-только: заявленная ёмкость подтверждена измерением.
+"Everything `ok`" should not be read as "the server works well". It means only
+this: the claimed capacity was confirmed by measurement.
 
 ## Status
 
