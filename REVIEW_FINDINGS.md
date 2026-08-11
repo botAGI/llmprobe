@@ -18,7 +18,6 @@ python3 -m pytest -q
 Baseline: 84 passed. After the one fix below: 84 passed (no regressions).
 Findings 2-4 were subsequently resolved (see each finding's fix note); the
 full suite currently passes.
-
 ---
 
 ## Status summary
@@ -29,6 +28,7 @@ full suite currently passes.
 | 2 | Medium | Capacity cliff fabricates a never-probed "measured" max when even the minimum probe length is rejected | Fixed |
 | 3 | Medium | `llmprobe/tokens.py` is dead code — never used by the production capacity path | Fixed |
 | 4 | Low | Slot mismatch context check message omits the claimed value that triggered it | Fixed |
+| 5 | Medium | Capacity reports the ceiling as a "measured" max when it is only a lower bound (true max is above ceiling) | Fixed |
 
 ---
 
@@ -225,6 +225,58 @@ only when the reported value genuinely differs from the derived value; when the
 mismatch comes solely from `claimed_ctx`, the message names the claimed value
 instead. The prose can no longer cite a comparison that did not trigger the
 finding.
+
+---
+
+## Finding 5 — Capacity reports the ceiling as a "measured" max when it is a lower bound
+
+- File: `llmprobe/probes/capacity.py` (`_binary_search`, ceiling-accepted branch)
+- Severity: Medium (honesty/provenance violation, not a crash)
+
+### What is wrong
+
+When the server accepts the ceiling itself, the binary search returns
+`max_accepted_tokens = ceiling` with the default provenance `MEASURED`
+(`CapacityResult.max_accepted_source` defaults to `Provenance.MEASURED`). But
+`cliff_behavior` is set to `ACCEPTED`, which explicitly means the real capacity
+is **above** the ceiling — the probe never sent any length greater than the
+ceiling. So the reported "measured max" is only a *lower bound*, never the
+measured maximum.
+
+This is the exact mirror of Finding 2 (below-`LO` capacity), which was already
+fixed to report `UNKNOWN` for a lower bound the probe could not measure. The
+above-ceiling case was left unhandled, so an honest server that accepts the
+whole probed range reports a fabricated "measured" maximum.
+
+### How to reproduce
+
+`make_mock_server(max_tokens=8192, behavior="honest")` with
+`probe_capacity(..., ceiling=8192)` (the honest server accepts everything, so
+the ceiling branch is taken):
+
+```
+max_accepted_tokens = 8192   # only known to be >= 8192; true max above
+max_accepted_source = Provenance.MEASURED  # reported as a measurement
+cliff_behavior      = CliffBehavior.ACCEPTED  # implies max > ceiling
+```
+
+The report therefore prints `| max input tokens (...) | 8192 | measured | ok |`
+implying `8192` was measured as the maximum, when the only honest statement is
+"the server accepts at least 8192; the true maximum is unknown".
+
+### Fix (applied)
+
+Set `max_accepted_source = Provenance.UNKNOWN` in the ceiling-accepted branch,
+matching the below-`LO` handling: a lower bound the probe did not measure is
+never reported as `measured`. Updated the `_binary_search` docstring and the
+`CapacityResult` docstring in `models.py` to state that an accepted ceiling
+means the value is a lower bound. Added a regression test
+(`test_ceiling_accepted_max_is_reported_as_unmeasured`) driving the honest mock
+server and asserting `max_accepted_source == Provenance.UNKNOWN`.
+
+The full suite passes (142 tests, +1 new regression test; the pre-existing
+`test_honest_server_accepts_ceiling` still passes since it does not assert
+provenance).
 
 ---
 
