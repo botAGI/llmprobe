@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from llmprobe.backends import generic, llamacpp, ollama, vllm
-from llmprobe.models import Backend, EffectiveConfig, Finding, Provenance
+from llmprobe.models import Backend, EffectiveConfig, Endpoint, Finding, Provenance
 
 logger = logging.getLogger(__name__)
 
@@ -148,15 +148,20 @@ async def read_effective_config(
     base_url: str,
     claimed_ctx: int | None,
     timeout: float | None = None,
+    endpoint: Endpoint = Endpoint.AUTO,
 ) -> tuple[EffectiveConfig, list[Finding]]:
     """Detect the backend and read the effective configuration.
 
     ``claimed_ctx`` is accepted for API compatibility with downstream probes
     that pass a caller-claimed context; adapter selection itself never depends
-    on it. The winning adapter's ``read_config`` is invoked and any findings
-    it emitted are returned alongside the configuration. ``timeout`` is
-    threaded through for callers that bound every request; the shared client
-    already enforces it on the wire.
+    on it. ``endpoint`` narrows which inference path the caller intends to
+    probe (see :class:`llmprobe.models.Endpoint`) and is threaded through so
+    any endpoint-conditioned behaviour honours the ``--endpoint`` choice; it
+    does not alter adapter detection, which always runs against the
+    backend-specific inspect endpoints. The winning adapter's ``read_config``
+    is invoked and any findings it emitted are returned alongside the
+    configuration. ``timeout`` is threaded through for callers that bound every
+    request; the shared client already enforces it on the wire.
 
     The effective config is normalised so that an absent parallel slot count is
     interpreted as the server default rather than as a single slot: a llama.cpp

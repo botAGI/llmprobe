@@ -166,7 +166,7 @@ async def probe(
         except httpx.HTTPError:
             raise
         config, findings = await read_effective_config(
-            client, base_url, claimed_ctx, timeout
+            client, base_url, claimed_ctx, timeout, endpoint
         )
         findings.extend(check_slots(config, claimed_ctx))
 
