@@ -179,9 +179,19 @@ async def probe(
     endpoint: Endpoint | str = Endpoint.AUTO,
     timeout: float = DEFAULT_TIMEOUT,
     api_key: str | None = None,
+    *,
+    chat: bool = False,
 ) -> ProbeReport:
-    """Run the configured read and optional capacity probe, then assemble a report."""
-    endpoint = _coerce_endpoint(endpoint)
+    """Run the configured read and optional capacity probe, then assemble a report.
+
+    ``endpoint`` selects which endpoint to exercise and may be given either as
+    an ``Endpoint`` member or as its documented string spelling (``"chat"``,
+    ``"embeddings"``, ``"auto"``); matching strings are coerced to the
+    ``Endpoint`` member. For the README-promised ``--endpoint chat`` the
+    ``chat=True`` shorthand is an equivalent, explicit way to select the chat
+    endpoint (``Endpoint.CHAT``); when given, it takes precedence.
+    """
+    endpoint = Endpoint.CHAT if chat else _coerce_endpoint(endpoint)
     async with _make_client(base_url, api_key, timeout) as client:
         try:
             await _assert_reachable(client)
