@@ -26,7 +26,7 @@ import httpx
 
 from llmprobe.backends.vllm import extract_prompt_tokens
 from llmprobe.models import Backend, CapacityResult, CliffBehavior, Provenance
-from llmprobe.tokens import _tokenize
+from llmprobe.tokens import MAX_ATTEMPTS, _tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +46,36 @@ _FINAL_B = "llmprobeFinalB"
 _CANARY = "llmprobeCanary"
 
 
-def _n_token_prompt(n: int, final: str) -> str:
-    """Build a prompt of ``n`` presumed single-token words ending in ``final``.
+async def _n_token_prompt(
+    client: httpx.AsyncClient,
+    base_url: str,
+    n: int,
+    final: str,
+    timeout: httpx.Timeout,
+) -> str:
+    """Build a prompt of exactly ``n`` tokens ending in ``final``.
 
-    Each whitespace-delimited word is treated as one token. No tokenizer is
-    invoked — the count is a nominal estimate, acceptable here because the
-    binary-search *classification* depends on the server's own responses, not
-    on the prompt's exact token count.
+    Starts from ``n-1`` filler words plus ``final`` and verifies the count
+    against the live ``/tokenize`` endpoint (via :func:`_tokenize`), adjusting
+    the filler count until the server reports exactly ``n`` tokens. This is the
+    README's "exact count via /tokenize" contract: the count is whatever the
+    server's own tokenizer says, not a guess. When ``/tokenize`` is unavailable
+    we fall back to the nominal estimate (``n-1`` fillers + ``final``) so the
+    caller can report the length as approximate instead of claiming an exact
+    count it could not verify.
     """
     if n <= 1:
         return final
-    return " ".join([_FILLER] * (n - 1) + [final])
+    base = base_url.rstrip("/")
+    reps = n - 1
+    for _ in range(MAX_ATTEMPTS):
+        prompt = " ".join([_FILLER] * reps + [final])
+        got = await _tokenize(client, base, prompt, timeout=timeout)
+        if got is None or got == n:
+            return prompt
+        per_rep = got / (reps + 1) if reps + 1 else 1.0
+        reps = max(1, round(reps + (n - got) / per_rep))
+    return " ".join([_FILLER] * reps + [final])
 
 
 async def _exact_tokenization_available(
@@ -181,8 +200,8 @@ async def _embed_classify(
     is ``hard_error``; effectively identical vectors are ``silent_truncation``;
     genuinely different vectors are ``accepted``.
     """
-    a = _n_token_prompt(n, _FINAL_A)
-    b = _n_token_prompt(n, _FINAL_B)
+    a = await _n_token_prompt(client, base_url, n, _FINAL_A, timeout)
+    b = await _n_token_prompt(client, base_url, n, _FINAL_B, timeout)
     _assert_differ_only_in_final_token(a, b)
     requests[0] += 1
     va = await _post_embed(client, base_url, endpoint, a, timeout)
@@ -220,7 +239,10 @@ async def _chat_classify(
     exactly the bytes we probe.
     """
     base = base_url.rstrip("/")
-    body = f"{_CANARY} " + _n_token_prompt(max(n - 1, 0), _FINAL_A)
+    tail = await _n_token_prompt(
+        client, base_url, max(n - 1, 0), _FINAL_A, timeout
+    )
+    body = f"{_CANARY} " + tail
     requests[0] += 1
     try:
         resp = await client.post(
