@@ -213,46 +213,28 @@ _OUTCOME_TO_CLIFF = {
 }
 
 
-async def probe_capacity(
-    client: httpx.AsyncClient,
-    base_url: str,
+async def _binary_search(
+    classify,
     endpoint: str,
-    ceiling: int = DEFAULT_CEILING,
-    backend: Backend = Backend.GENERIC,
+    ceiling: int,
+    exact: bool,
+    requests: list[int],
 ) -> CapacityResult:
-    """Determine the largest accepted input length and how the server fails.
+    """Binary-search over input length ``n`` in ``[LO, ceiling]``.
 
-    Binary-search over input length ``n`` in ``[LO, ceiling]``. Returns a
-    :class:`~llmprobe.models.CapacityResult` with the largest ``n`` classified
-    ``ACCEPTED`` as ``max_accepted_tokens`` and the outcome of the first
-    non-accepted length as ``cliff_behavior``. When every probed length is
-    accepted (including ``ceiling``), ``cliff_behavior`` is ``ACCEPTED``.
+    The ``classify`` callable returns ``"accepted"``/``"silent_truncation"``/
+    ``"hard_error"`` for a given length and must increment ``requests[0]`` for
+    every request it issues. Returns a :class:`~llmprobe.models.CapacityResult`
+    with the largest ``n`` classified ``ACCEPTED`` as ``max_accepted_tokens``
+    and the outcome of the first non-accepted length as ``cliff_behavior``.
+    When every probed length is accepted (including ``ceiling``),
+    ``cliff_behavior`` is ``ACCEPTED``.
 
     When every probed length in ``[LO, ceiling]`` is rejected, no length was
     measured as accepted; ``max_accepted_tokens`` carries a lower-bound value
     that was never probed and ``max_accepted_source`` is set to ``UNKNOWN`` so
     the report does not claim a measurement it does not have.
-
-    ``backend`` is accepted for API symmetry; the request shapes we send are
-    stable across the supported backends.
     """
-    requests = [0]
-
-    # Can we verify our prompt lengths against the server's own tokenizer? If
-    # not, every reported count is a nominal estimate and token_count_exact must
-    # be False — we never claim a verified count we could not obtain. vLLM is
-    # the exception: it reports its own exact count via usage.prompt_tokens, so
-    # we verify against that field instead of /tokenize.
-    if backend == Backend.VLLM:
-        exact = await _vllm_prompt_tokens_exact(client, base_url, endpoint)
-    else:
-        exact = await _exact_tokenization_available(client, base_url)
-
-    async def classify(n: int) -> str:
-        if endpoint.rstrip("/").endswith("/chat/completions"):
-            return await _chat_classify(client, base_url, n, requests)
-        return await _embed_classify(client, base_url, n, requests)
-
     # If the ceiling itself is accepted there is no cliff within range.
     if await classify(ceiling) == "accepted":
         return CapacityResult(
@@ -286,3 +268,62 @@ async def probe_capacity(
         cliff_behavior=_OUTCOME_TO_CLIFF[cliff_outcome],
         probe_requests_used=requests[0],
     )
+
+
+async def _binary_search_chat(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    ceiling: int,
+    exact: bool,
+    requests: list[int],
+) -> CapacityResult:
+    """Binary-search the ``/v1/chat/completions`` cliff.
+
+    Runs the shared binary-search loop against :func:`_chat_classify`, which
+    probes each length via a head canary rather than the two-prompt embedding
+    method used for the embeddings endpoint.
+    """
+    async def classify(n: int) -> str:
+        return await _chat_classify(client, base_url, n, requests)
+
+    return await _binary_search(classify, endpoint, ceiling, exact, requests)
+
+
+async def probe_capacity(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    ceiling: int = DEFAULT_CEILING,
+    backend: Backend = Backend.GENERIC,
+) -> CapacityResult:
+    """Determine the largest accepted input length and how the server fails.
+
+    Dispatches to a per-endpoint binary search: a head-canary search over
+    ``/v1/chat/completions`` and the two-prompt search over
+    ``/v1/embeddings``.
+
+    ``backend`` is accepted for API symmetry; the request shapes we send are
+    stable across the supported backends.
+    """
+    requests = [0]
+
+    # Can we verify our prompt lengths against the server's own tokenizer? If
+    # not, every reported count is a nominal estimate and token_count_exact must
+    # be False — we never claim a verified count we could not obtain. vLLM is
+    # the exception: it reports its own exact count via usage.prompt_tokens, so
+    # we verify against that field instead of /tokenize.
+    if backend == Backend.VLLM:
+        exact = await _vllm_prompt_tokens_exact(client, base_url, endpoint)
+    else:
+        exact = await _exact_tokenization_available(client, base_url)
+
+    if endpoint.rstrip("/").endswith("/chat/completions"):
+        return await _binary_search_chat(
+            client, base_url, endpoint, ceiling, exact, requests
+        )
+
+    async def classify(n: int) -> str:
+        return await _embed_classify(client, base_url, n, requests)
+
+    return await _binary_search(classify, endpoint, ceiling, exact, requests)
