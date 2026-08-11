@@ -23,7 +23,7 @@ from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
 from llmprobe.probes.capacity import DEFAULT_CEILING, probe_capacity
 from llmprobe.probes.config import read_effective_config
 from llmprobe.probes.slots import check_slots
-from llmprobe.report import to_json, to_markdown
+from llmprobe.report import to_json, to_json_schema, to_markdown
 from llmprobe.models import (
     Backend,
     CapacityResult,
@@ -191,8 +191,24 @@ async def probe(
 @app.command()
 def main(
     base_url: Annotated[
-        str, typer.Argument(help="Base URL of the inference server.")
-    ],
+        str | None,
+        typer.Argument(
+            help=(
+                "Base URL of the inference server. Required unless --json-schema "
+                "is given."
+            ),
+        ),
+    ] = None,
+    json_schema: Annotated[
+        bool,
+        typer.Option(
+            "--json-schema",
+            help=(
+                "Print the JSON schema of the report (from the pydantic model) "
+                "to stdout and exit without probing."
+            ),
+        ),
+    ] = False,
     claimed_ctx: Annotated[
         int | None,
         typer.Option(
@@ -242,6 +258,13 @@ def main(
     ] = None,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
+    if json_schema:
+        typer.echo(to_json_schema())
+        raise typer.Exit(code=0)
+
+    if base_url is None:
+        raise typer.BadParameter("BASE_URL is required unless --json-schema is given")
+
     try:
         report = asyncio.run(
             probe(base_url, claimed_ctx, probe_flag, endpoint, timeout, api_key)
