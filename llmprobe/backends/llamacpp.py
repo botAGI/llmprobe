@@ -27,7 +27,7 @@ async def detect(client: httpx.AsyncClient, base_url: str) -> float:
     OpenAI-compatible servers do not. Its presence is our detection signal.
     """
     try:
-        resp = await client.get(f"{_base(base_url)}/props")
+        resp = await client.get(f"{_base(base_url)}/props", timeout=client.timeout)
         resp.raise_for_status()
         payload = resp.json()
     except (httpx.HTTPError, ValueError):
