@@ -95,6 +95,7 @@ class CliffBehavior(str, Enum):
     ACCEPTED = "accepted"
     SILENT_TRUNCATION = "silent_truncation"
     HARD_ERROR = "hard_error"
+    TRANSPORT_ERROR = "transport_error"
 
 
 class CapacityResult(BaseModel):

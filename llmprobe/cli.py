@@ -49,7 +49,10 @@ _console = Console()
 _API_KEY_ENV = "LLMPROBE_API_KEY"
 
 #: Default per-request timeout in seconds (applied to every HTTP request).
-DEFAULT_TIMEOUT = 10.0
+#: Generous by design: probing long inputs can exceed a short timeout, and the
+#: capacity probe scales this base up proportionally to the prompt's token
+#: count. Users may override it with ``--timeout``.
+DEFAULT_TIMEOUT = 120.0
 
 
 def redact_base_url(base_url: str) -> str:

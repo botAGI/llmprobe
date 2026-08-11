@@ -44,16 +44,42 @@ LO = 16
 DEFAULT_CEILING = 32768
 COSINE_SIMILARITY_THRESHOLD = 0.9999
 
+# Default per-request timeout (seconds) applied to every HTTP request. Mirrors
+# :data:`llmprobe.cli.DEFAULT_TIMEOUT`; kept local so this module does not
+# import from ``cli`` (capacity is backend-facing, not CLI-facing).
+DEFAULT_TIMEOUT = 120.0
+
 # Surface a single, greppable flag when identical embeddings confirm that the
 # server silently discarded the differing tail. The value is a measured fact:
 # the two prompts were verified to differ only in the final token and the
 # server still returned identical vectors.
 _TRUNCATION_FLAG = "silent_truncation"
 
+# Transport failures that indicate the endpoint itself is unreachable or
+# degraded — a client that never establishes a connection (:class:`httpx
+# .ConnectError`) or a peer that closes/mangles an in-flight message
+# (:class:`httpx.RemoteProtocolError`). These must propagate as
+# ``httpx.HTTPError`` so the caller reports a failed server and exits ``2``;
+# they are NOT classified (the probe never reached a verdict).
+# Every other transport failure — timeouts (:class:`httpx.TimeoutException`)
+# and mid-transfer read/write breaks (:class:`httpx.ReadError` /
+# ``WriteError``) — means the server was reachable but too slow or dropped the
+# connection, and is classified as ``transport_error`` => capacity UNKNOWN.
+_PROPAGATED_TRANSPORT = (httpx.ConnectError, httpx.RemoteProtocolError)
+
 _FILLER = "tok"
 _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
 _CANARY = "llmprobeCanary"
+
+# A prompt's per-request timeout grows with its token count so the server has
+# time to process a long input before replying. ``_TIMEOUT_SCALE_BASELINE`` is
+# the token count that receives the caller's base timeout unchanged; longer
+# prompts are allowed proportionally more, capped at the base plus
+# ``_MAX_TIMEOUT_ALLOWANCE`` so an adversarial ceiling cannot inflate the
+# timeout pathologically.
+_TIMEOUT_SCALE_BASELINE = 512
+_MAX_TIMEOUT_ALLOWANCE = 180.0
 
 # Tell the model to echo the first word so we can check whether the head
 # (which begins with the canary) survived the server's context handling.
@@ -212,6 +238,20 @@ def _assert_differ_only_in_final_token(a: str, b: str) -> None:
         )
 
 
+def _scale_timeout(timeout: httpx.Timeout, n: int) -> float:
+    """Scale a per-request timeout proportionally to the prompt's token count.
+
+    A short ``n``-token prompt should be allowed far less time than a long one:
+    the server must process the whole input before replying, so the timeout
+    grows linearly with ``n`` (never shrinking below the caller's base). The
+    long-prompt allowance is capped so an adversarial ceiling value cannot
+    inflate the timeout pathologically.
+    """
+    base = float(timeout.read or DEFAULT_TIMEOUT)
+    scale = max(1.0, n / _TIMEOUT_SCALE_BASELINE) * base
+    return min(scale, base + _MAX_TIMEOUT_ALLOWANCE)
+
+
 async def _embed_classify(
     client: httpx.AsyncClient,
     base_url: str,
@@ -224,15 +264,35 @@ async def _embed_classify(
 
     Two identical-length prompts differing only in the final token. A 4xx/5xx
     is ``hard_error``; effectively identical vectors are ``silent_truncation``;
-    genuinely different vectors are ``accepted``.
+    genuinely different vectors are ``accepted``. A transport failure (timeout
+    or a dropped connection mid-flight) yields ``transport_error``, distinct
+    from ``hard_error`` — it means we could not reach a verdict rather than the
+    server actively rejecting the length. An unreachable endpoint
+    (``ConnectError``) or a torn protocol exchange (``RemoteProtocolError``) is
+    re-raised so an unusable server surfaces as ``httpx.HTTPError`` instead of a
+    fabricated classification.
     """
     a = await _n_token_prompt(client, base_url, n, _FINAL_A, timeout)
     b = await _n_token_prompt(client, base_url, n, _FINAL_B, timeout)
     _assert_differ_only_in_final_token(a, b)
     requests[0] += 1
-    va = await _post_embed(client, base_url, endpoint, a, timeout)
+    try:
+        va = await _post_embed(
+            client, base_url, endpoint, a, httpx.Timeout(_scale_timeout(timeout, n))
+        )
+    except httpx.TransportError as exc:
+        if isinstance(exc, _PROPAGATED_TRANSPORT):
+            raise
+        return "transport_error"
     requests[0] += 1
-    vb = await _post_embed(client, base_url, endpoint, b, timeout)
+    try:
+        vb = await _post_embed(
+            client, base_url, endpoint, b, httpx.Timeout(_scale_timeout(timeout, n))
+        )
+    except httpx.TransportError as exc:
+        if isinstance(exc, _PROPAGATED_TRANSPORT):
+            raise
+        return "transport_error"
     if va is None or vb is None:
         return "hard_error"
     if _cosine(va, vb) > COSINE_SIMILARITY_THRESHOLD:
@@ -296,7 +356,10 @@ async def _chat_classify(
     prompt and the model is told to reply with the first word. A server that
     silently truncates an oversized input drops the head, so the canary no
     longer appears in the reply — that is ``silent_truncation``. A 4xx/5xx is
-    ``hard_error``; a reply that still carries the canary is ``accepted``.
+    ``hard_error``; a reply that still carries the canary is ``accepted``. A
+    transport failure (timeout or a dropped connection mid-flight) yields
+    ``transport_error``; an unreachable endpoint (``ConnectError``) or a torn
+    protocol exchange (``RemoteProtocolError``) is re-raised.
 
     This replaces the earlier method that compared full outputs of two prompts
     differing only in their final token, which produced false positives on
@@ -307,7 +370,14 @@ async def _chat_classify(
     )
     prompt = f"{_CANARY} " + tail
     requests[0] += 1
-    reply = await _post_chat(client, base_url, path, prompt, timeout)
+    try:
+        reply = await _post_chat(
+            client, base_url, path, prompt, httpx.Timeout(_scale_timeout(timeout, n))
+        )
+    except httpx.TransportError as exc:
+        if isinstance(exc, _PROPAGATED_TRANSPORT):
+            raise
+        return "transport_error"
     if reply is None:
         return "hard_error"
     if _CANARY not in reply:
@@ -326,9 +396,19 @@ _OUTCOME_TO_CLIFF = {
     "hard_error": CliffBehavior.HARD_ERROR,
     "silent_truncation": CliffBehavior.SILENT_TRUNCATION,
     "accepted": CliffBehavior.ACCEPTED,
+    "transport_error": CliffBehavior.TRANSPORT_ERROR,
 }
 
 Classifier = Callable[[int], Awaitable[str]]
+
+
+class _TransportAbort(Exception):
+    """Raised when the classifier reports a transport error mid-search.
+
+    A timeout or dropped connection means we could not reach a verdict for the
+    length being probed, so the binary search cannot trust its bounds and must
+    stop immediately instead of guessing a boundary.
+    """
 
 
 async def _probe_lo(
@@ -339,10 +419,15 @@ async def _probe_lo(
     ``mid`` is classified via ``classify`` (which dispatches to
     ``_embed_classify``/``_chat_classify``). When accepted the cliff lies above
     ``mid`` so ``lo`` is raised past it; otherwise ``mid`` becomes the new
-    exclusive upper bound. Returns the updated ``(lo, hi)``.
+    exclusive upper bound. Returns the updated ``(lo, hi)``. A
+    ``transport_error`` outcome aborts the search by raising
+    :class:`_TransportAbort`.
     """
     mid = (lo + hi) // 2
-    if await classify(mid) == "accepted":
+    outcome = await classify(mid)
+    if outcome == "transport_error":
+        raise _TransportAbort
+    if outcome == "accepted":
         return mid + 1, hi
     return lo, mid - 1
 
@@ -356,6 +441,23 @@ async def _probe_hi(classify: Classifier, n: int) -> str:
     ``cliff_behavior``. Returns the raw outcome string.
     """
     return await classify(n)
+
+
+def _transport_result(endpoint: str, requests_used: int) -> CapacityResult:
+    """A ``CapacityResult`` marking the search aborted by a transport error.
+
+    The probe could not reach a verdict, so there is no measured boundary: the
+    token count is ``0`` and its provenance is ``UNKNOWN`` — we honestly report
+    that capacity could not be determined rather than fabricating a cliff.
+    """
+    return CapacityResult(
+        endpoint=endpoint,
+        max_accepted_tokens=0,
+        max_accepted_source=Provenance.UNKNOWN,
+        token_count_exact=False,
+        cliff_behavior=CliffBehavior.TRANSPORT_ERROR,
+        probe_requests_used=requests_used,
+    )
 
 
 async def _binary_search(
@@ -382,13 +484,19 @@ async def _binary_search(
     when ``ceiling`` itself is accepted the true maximum lies above ``ceiling``
     and ``max_accepted_source`` is ``UNKNOWN`` — ``ceiling`` is only a lower
     bound, never a measured maximum.
+
+    A ``transport_error`` outcome (timeout or dropped connection) anywhere in
+    the search aborts immediately: the bounds can no longer be trusted, so the
+    result is marked ``UNKNOWN`` (see :func:`_transport_result`) rather than a
+    found boundary.
     """
     # If the ceiling itself is accepted there is no cliff within range. The
     # true maximum is then unknown — it lies somewhere above ``ceiling`` — so
     # ``ceiling`` is only a lower bound, never a measured maximum. We therefore
     # mark ``max_accepted_source`` UNKNOWN rather than report a measurement the
     # probe does not have (mirrors the below-``LO`` handling above).
-    if await classify(ceiling) == "accepted":
+    ceiling_outcome = await classify(ceiling)
+    if ceiling_outcome == "accepted":
         return CapacityResult(
             endpoint=endpoint,
             max_accepted_tokens=ceiling,
@@ -397,16 +505,23 @@ async def _binary_search(
             cliff_behavior=CliffBehavior.ACCEPTED,
             probe_requests_used=requests[0],
         )
+    if ceiling_outcome == "transport_error":
+        return _transport_result(endpoint, requests[0])
 
     # Narrow ``[LO, ceiling]`` with a binary search over length ``n``: at each
     # step probe the midpoint and move the accepted boundary accordingly. The
     # search is logarithmic in the ceiling, never linear in the cliff position.
-    lo, hi = LO, ceiling
-    while lo <= hi:
-        lo, hi = await _probe_lo(classify, lo, hi)
+    try:
+        lo, hi = LO, ceiling
+        while lo <= hi:
+            lo, hi = await _probe_lo(classify, lo, hi)
+    except _TransportAbort:
+        return _transport_result(endpoint, requests[0])
 
     max_accepted = hi
     cliff_outcome = await _probe_hi(classify, max_accepted + 1)
+    if cliff_outcome == "transport_error":
+        return _transport_result(endpoint, requests[0])
     return CapacityResult(
         endpoint=endpoint,
         max_accepted_tokens=max_accepted,

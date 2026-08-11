@@ -502,6 +502,46 @@ async def test_unreachable_server_raises_http_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_timeout_reports_transport_error_as_unknown() -> None:
+    """A request that times out must abort the binary search to ``UNKNOWN``.
+
+    README promise: a value whose provenance we cannot establish is reported as
+    ``unknown`` rather than a confident guess. When a probe request exceeds the
+    timeout (the server is slow, not rejecting), the classifier yields
+    ``transport_error`` — distinct from ``hard_error`` — and the search stops
+    immediately. It must NOT fabricate a found boundary: ``cliff_behavior`` is
+    ``TRANSPORT_ERROR`` and ``max_accepted_tokens`` carries ``UNKNOWN``
+    provenance, never a measured cliff.
+
+    ASGI transports do not enforce httpx read timeouts (a real timeout only
+    fires over a socket), so, like the unreachable-server test above, we drive
+    the transport failure through a ``MockTransport``: every request raises a
+    ``ReadTimeout``, which the classifier must turn into ``transport_error``
+    rather than swallow as a hard error or a boundary.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(
+            "timed out", request=request
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url=BASE_URL
+    ) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            EMBED_ENDPOINT,
+            ceiling=32768,
+            backend=Backend.LLAMACPP,
+            timeout=0.001,
+        )
+    assert result.cliff_behavior == CliffBehavior.TRANSPORT_ERROR
+    assert result.max_accepted_source == Provenance.UNKNOWN
+    assert result.max_accepted_tokens == 0
+
+
+@pytest.mark.asyncio
 async def test_endpoint_selection_routes_probe_to_chat_path() -> None:
     """``Endpoint.CHAT`` must route the probe to the chat path, not embeddings.
 
