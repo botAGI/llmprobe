@@ -81,6 +81,24 @@ def test_cli_options_are_declared() -> None:
     assert "--endpoint" in opts
     assert "--api-key" in opts
     assert "--timeout" in opts
+    assert "--json-schema" in opts
+
+
+def test_json_schema_prints_valid_json_and_exits_zero() -> None:
+    """``--json-schema`` prints the report's JSON schema and exits without probing.
+
+    No base URL is required: the schema is derived purely from the pydantic
+    model and printed to stdout as valid JSON with exit code 0, matching the
+    acceptance check ``llmprobe --json-schema``.
+    """
+    result = runner.invoke(cli.app, ["--json-schema"])
+    assert result.exit_code == 0, result.output
+
+    schema = json.loads(result.stdout)
+    assert schema["title"] == "ProbeReport"
+    assert schema["type"] == "object"
+    assert "config" in schema["properties"]
+    assert "findings" in schema["properties"]
 
 
 def test_safe_is_the_default(monkeypatch: pytest.MonkeyPatch) -> None:

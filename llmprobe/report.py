@@ -187,6 +187,21 @@ def to_json(report: ProbeReport) -> str:
     return json.dumps(_to_json_object(report), separators=(",", ":"))
 
 
+def to_json_schema() -> str:
+    """Render the JSON schema of the report from the pydantic model.
+
+    Uses ``ProbeReport.model_json_schema()`` so the schema always matches the
+    code that produces the report: there is no hand-written shape to drift out
+    of sync. The output is indented for inspection; it is the contract a machine
+    consumer can validate a probe report against.
+    """
+    return json.dumps(
+        ProbeReport.model_json_schema(by_alias=True),
+        separators=(",", ":"),
+        indent=2,
+    )
+
+
 def _fmt(value: object) -> str:
     """Format a cell value, rendering missing values honestly as ``unknown``."""
     if value is None:
