@@ -252,7 +252,7 @@ async def test_chat_hard_error_server_cliff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_silent_truncation_server_cliff() -> None:
+async def test_silent_truncation_chat_completions() -> None:
     """A chat silent_truncation server MUST be detected via the head canary.
 
     The chat endpoint always returns HTTP 200; only the canary check can reveal
