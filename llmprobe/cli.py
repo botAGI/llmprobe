@@ -174,6 +174,7 @@ async def probe(
             endpoint,
             ceiling=DEFAULT_CEILING,
             backend=config.backend,
+            model=config.model_id,
             timeout=timeout,
             safe=safe,
         )
