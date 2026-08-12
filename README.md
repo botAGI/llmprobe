@@ -83,6 +83,48 @@ flag below is a real CLI option — verify against `llmprobe --help`.
    clean. Use this as a gate to stop a deploy that would silently truncate
    prompts beyond the server's real limit.
 
+## Using as a CI gate
+
+llmprobe returns a process exit code from the severity of its findings, which
+is what makes it usable as a gate in a CI pipeline rather than just a
+sidecar report. The codes are stable and documented:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | clean — no mismatch found |
+| `1` | advertised capacity does not match measured (a `--claimed-ctx` mismatch surfaced as a `MISMATCH` finding) |
+| `2` | error — server unreachable, transport failure, or a request raised an HTTP error |
+
+A gate step runs llmprobe against your server, and the job fails if the exit
+code is non-zero. Below is a GitHub Actions workflow step that runs the probe
+against a local inference server and checks the return code explicitly. It
+passes `--claimed-ctx` so that a mismatch (measured ceiling below what you
+advertise) aborts the pipeline instead of shipping a server that silently
+truncates prompts.
+
+```yaml
+- name: Probe inference server capacity (CI gate)
+  run: |
+    uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
+  # llmprobe exits 0 when measured capacity matches the claim and
+  # 1 when it does not. Any non-zero exit fails this step.
+```
+
+A few notes on making the gate honest and non-flaky:
+
+- **Pass `--claimed-ctx`.** Without it llmprobe still probes, but nothing is
+  ever compared, so the gate can never detect a mismatch. The exit code only
+  becomes meaningful as a gate when you state the context you actually serve.
+- **Set `--timeout`.** Every HTTP request already carries a per-request
+  timeout (default 10s) so a hung server fails the step fast instead of
+  stalling the job until CI's own timeout kills it.
+- **Treat exit code `2` as a hard stop, not a retry.** It means the server was
+  unreachable or rejected the probe — gating on the unknown rather than
+  guessing success is the honest behaviour.
+- **Do not rely on `--json` output parsing for gating.** The JSON report is
+  for humans and tooling to inspect; the exit code is the single stable, CI-
+  relevant contract.
+
 ## Error handling and security
 
 - **Unreachable server**: llmprobe verifies the server is reachable before
