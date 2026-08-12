@@ -51,7 +51,7 @@ _API_KEY_ENV = "LLMPROBE_API_KEY"
 #: Default per-request timeout in seconds (applied to every HTTP request).
 #: Generous by design: probing long inputs can exceed a short timeout, and the
 #: capacity probe scales this base up proportionally to the prompt's token
-#: count. Users may override it with ``--timeout``.
+#: count.
 DEFAULT_TIMEOUT = 10.0
 
 
