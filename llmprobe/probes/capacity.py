@@ -36,7 +36,7 @@ from llmprobe.models import (
     Endpoint,
     Provenance,
 )
-from llmprobe.tokens import MAX_ATTEMPTS, _tokenize
+from llmprobe.tokens import _tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -115,27 +115,34 @@ async def _n_token_prompt(
 ) -> str:
     """Build a prompt of exactly ``n`` tokens ending in ``final``.
 
-    Starts from ``n-1`` filler words plus ``final`` and verifies the count
-    against the live ``/tokenize`` endpoint (via :func:`_tokenize`), adjusting
-    the filler count until the server reports exactly ``n`` tokens. This is the
-    README's "exact count via /tokenize" contract: the count is whatever the
-    server's own tokenizer says, not a guess. When ``/tokenize`` is unavailable
-    we fall back to the nominal estimate (``n-1`` fillers + ``final``) so the
-    caller can report the length as approximate instead of claiming an exact
-    count it could not verify.
+    Binary-searches the number of filler words in ``[1, n]``: probe the
+    midpoint, verify its token count against the live ``/tokenize`` endpoint
+    (via :func:`_tokenize`) and narrow the range until the server reports
+    exactly ``n`` tokens. The token count grows monotonically with the filler
+    count, so each verification discards half the remaining range instead of
+    nudging the count by one. This is the README's "exact count via /tokenize"
+    contract: the count is whatever the server's own tokenizer says, not a
+    guess. When ``/tokenize`` is unavailable we fall back to the nominal
+    estimate (``n-1`` fillers + ``final``) so the caller can report the length
+    as approximate instead of claiming an exact count it could not verify.
     """
     if n <= 1:
         return final
     base = base_url.rstrip("/")
-    reps = n - 1
-    for _ in range(MAX_ATTEMPTS):
-        prompt = " ".join([_FILLER] * reps + [final])
+    lo, hi = 1, n
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        prompt = " ".join([_FILLER] * mid + [final])
         got = await _tokenize(client, base, prompt, timeout=timeout)
-        if got is None or got == n:
+        if got is None:
+            break
+        if got == n:
             return prompt
-        per_rep = got / (reps + 1) if reps + 1 else 1.0
-        reps = max(1, round(reps + (n - got) / per_rep))
-    return " ".join([_FILLER] * reps + [final])
+        if got < n:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return " ".join([_FILLER] * max(n - 1, 0) + [final])
 
 
 async def _exact_tokenization_available(
