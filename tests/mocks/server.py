@@ -36,6 +36,7 @@ def make_mock_server(
     required_token: str | None = None,
     tokenize_enabled: bool = True,
     required_model: str | None = None,
+    slots_disabled: bool = False,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -64,6 +65,13 @@ def make_mock_server(
     the safety net for the "use the real model from config" contract: a probe
     that hardcodes a mock-derived name instead of the learner-supplied model
     will 404 and fail.
+
+    The server advertises a llama.cpp-compatible surface: ``/props`` deliberately
+    omits ``n_batch``/``n_ubatch`` and ``/slots`` reports per-slot state so a
+    probe's per-slot context cross-check has something to observe. When
+    ``slots_disabled`` is ``True``, ``/slots`` answers ``501`` (``--no-slots``
+    mode) so a probe must tolerate an unavailable per-slot cross-check without
+    failing.
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
@@ -104,6 +112,37 @@ def make_mock_server(
             "default_generation_settings": {"n_ctx": max_tokens},
             "build_info": {"build": 0, "commit": "mock", "version": "0.0.0"},
         }
+
+    @app.get("/slots")
+    def slots(request: Request, response: Response) -> list | dict:
+        if not _guard(request, response):
+            return {
+                "error": {
+                    "message": "unauthorized",
+                    "type": "authentication_error",
+                }
+            }
+        if slots_disabled:
+            # --no-slots mode: a real llama.cpp server answers 501 here. The
+            # probe must tolerate this rather than treat it as fatal.
+            response.status_code = 501
+            return {
+                "error": {
+                    "message": "slots disabled",
+                    "type": "server_error",
+                    "code": 501,
+                }
+            }
+        # One active slot exposing its own per-slot n_ctx, so a probe's
+        # /slots cross-check can observe a READ value.
+        return [
+            {
+                "id": 0,
+                "state": 1,
+                "n_ctx": max_tokens,
+                "is_processing": False,
+            }
+        ]
 
     @app.get("/v1/models")
     def models(request: Request, response: Response) -> dict:
