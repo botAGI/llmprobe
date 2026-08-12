@@ -19,13 +19,24 @@ Hermetic: no network, no real inference server — only the mock server through
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import httpx
 import pytest
 
-from llmprobe.models import Backend, CliffBehavior, Endpoint, Provenance
+from llmprobe.models import (
+    Backend,
+    CapacityResult,
+    CliffBehavior,
+    Endpoint,
+    Provenance,
+)
 from llmprobe.probes.capacity import probe_capacity
 
-from tests.mocks.server import make_mock_server
+from tests.mocks.server import _embed, make_mock_server
 
 BASE_URL = "http://mock"
 
@@ -145,3 +156,128 @@ def test_mock_refuses_hardcoded_model_leak(leak: str) -> None:
         json={"input": "some prompt", "model": REAL_MODEL},
     )
     assert good.status_code == 200
+
+
+class _TruncatingEmbeddingsServer(BaseHTTPRequestHandler):
+    """A real local HTTP fake embeddings server that truncates its input.
+
+    This deliberately does NOT use the FastAPI/ASGI in-process seam: it binds a
+    real TCP socket and answers ``POST /v1/embeddings`` with an embedding vector
+    derived from only the FIRST ``cut_tokens`` words of the input. Any tokens
+    past that length are genuinely discarded before the vector is computed, so
+    two oversized prompts whose ONLY difference sits in the discarded tail
+    collapse to the identical vector — exactly the "silent truncation" a real
+    overloaded server exhibits. ``POST /tokenize`` reports the input split into
+    words (one token per word), so the probe can verify exact counts.
+
+    The truncation length is fixed at construction: the server really cuts at
+    ``cut_tokens`` and nowhere else. This lets the integration test assert the
+    probe's detected boundary matches the server's true cut point exactly.
+    """
+
+    cut_tokens: int = 0
+    protocol_version = "HTTP/1.1"
+
+    def _send_json(self, status: int, obj: dict) -> None:
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _tokens(self, raw: object) -> list[str]:
+        if isinstance(raw, str):
+            return raw.split()
+        if isinstance(raw, list):
+            return [str(x) for x in raw]
+        return [str(raw)]
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            self._send_json(400, {"error": {"type": "invalid_request_error"}})
+            return
+
+        if self.path == "/tokenize":
+            content = body.get("content", "")
+            tokens = self._tokens(content)
+            self._send_json(200, {"tokens": tokens})
+            return
+
+        if self.path == "/v1/embeddings":
+            raw_input = body.get("input", "")
+            inputs: list[str]
+            if isinstance(raw_input, str):
+                inputs = [raw_input]
+            else:
+                inputs = [str(x) for x in list(raw_input)]
+            total = sum(len(self._tokens(x)) for x in inputs)
+            data = []
+            for i, item in enumerate(inputs):
+                tokens = self._tokens(item)
+                vector = _embed(tokens, limit=self.cut_tokens)
+                data.append(
+                    {"object": "embedding", "embedding": vector, "index": i}
+                )
+            self._send_json(
+                200,
+                {
+                    "object": "list",
+                    "data": data,
+                    "model": "local-fake",
+                    "usage": {
+                        "prompt_tokens": total,
+                        "total_tokens": total,
+                    },
+                },
+            )
+            return
+
+        self._send_json(404, {"error": {"type": "not_found"}})
+
+
+def test_embeddings_integration_boundary_detected_exactly() -> None:
+    """Integration: a local fake embeddings server that truly truncates input.
+
+    Bringing up a REAL bound-socket HTTP server (not the ASGI in-process seam)
+    that genuinely discards everything past ``CUT_TOKENS`` and running the real
+    ``httpx`` probe client against it exercises the full network stack. The
+    probe must detect the server's true truncation boundary EXACTLY: every
+    length up to and including ``CUT_TOKENS`` is accepted, and ``CUT_TOKENS +
+    1`` is the first length whose tail is silently dropped.
+    """
+    cut_tokens = 512
+    ceiling = 32768
+
+    _TruncatingEmbeddingsServer.cut_tokens = cut_tokens
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _TruncatingEmbeddingsServer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+
+        async def _run() -> "CapacityResult | None":
+            async with httpx.AsyncClient(base_url=url, timeout=60.0) as client:
+                return await probe_capacity(
+                    client,
+                    url,
+                    EMBED_ENDPOINT,
+                    ceiling=ceiling,
+                    backend=Backend.LLAMACPP,
+                    model=REAL_MODEL,
+                )
+
+        result = asyncio.run(_run())
+    finally:
+        server.shutdown()
+        thread.join()
+
+    assert result is not None
+    assert result.cliff_behavior == CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_tokens == cut_tokens
+    assert result.max_accepted_source == Provenance.MEASURED
+    assert result.token_count_exact is True
