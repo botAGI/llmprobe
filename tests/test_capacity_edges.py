@@ -277,3 +277,49 @@ async def test_chat_marker_absent_in_calibration_returns_unknown() -> None:
     assert result is not None
     assert result.max_accepted_source == Provenance.UNKNOWN
     assert result.max_accepted_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_429_with_retry_after_retries_and_succeeds() -> None:
+    """A server that rate-limits once with 429 + Retry-After must not fail.
+
+    A 429 (Too Many Requests) with a ``Retry-After`` header is a transient
+    rate-limit signal, NOT a rejection of the probed length. The probe must
+    honour the server's rate-limit window by retrying the request and, when
+    the retry succeeds, report the length as honestly accepted — it must NOT
+    classify the 429 as a ``hard_error`` boundary. If the retry-on-429
+    handling were ever removed, the first non-200 response would be read as
+    ``hard_error`` (a length that could not be verified as accepted) and this
+    test would go red.
+    """
+    calls = {"n": 0}
+
+    def embed(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        prompt = body.get("input", "")
+        if prompt.endswith("llmprobeFinalA"):
+            vector = [1.0, 0.0, 0.0]
+        else:
+            vector = [0.0, 1.0, 0.0]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(
+            200,
+            json={"data": [{"embedding": vector}], "model": "mock"},
+        )
+
+    async with _embeddings_client(embed) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            EMBED_ENDPOINT,
+            ceiling=64,
+            backend=Backend.LLAMACPP,
+            model="mock",
+        )
+
+    assert calls["n"] >= 2
+    assert result is not None
+    assert result.cliff_behavior == CliffBehavior.ACCEPTED
+    assert result.cliff_behavior != CliffBehavior.HARD_ERROR
