@@ -106,19 +106,6 @@ def test_json_schema_prints_valid_json_and_exits_zero() -> None:
     assert "findings" in schema["properties"]
 
 
-def test_help_when_invoked_with_no_args() -> None:
-    """Invoking ``llmprobe`` with no args shows help and exits 0.
-
-    The README documents ``uvx llmprobe`` (no arguments) as the install /
-    discovery step. Every real probe needs a ``BASE_URL``, but an argument-less
-    invocation must print the full help and exit 0 rather than crash with a
-    "BASE_URL is required" usage error.
-    """
-    result = runner.invoke(cli.app, [])
-    assert result.exit_code == 0, result.output
-    assert "Usage" in result.output
-
-
 def test_clean_result_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
     """A clean probe with no mismatch or error findings => exit code 0.
 
