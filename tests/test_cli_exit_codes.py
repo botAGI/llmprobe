@@ -19,7 +19,6 @@ import json
 
 import httpx
 import pytest
-import typer
 from typer.testing import CliRunner
 
 import llmprobe.cli as cli
@@ -128,8 +127,8 @@ def test_endpoint_parse_error_exit_code_is_two(monkeypatch: pytest.MonkeyPatch) 
     When ``endpoint`` reaches the probe path as a non-``Endpoint`` value (for
     example a caller invoking ``main`` directly, bypassing typer's option
     coercion), the resulting ``ValueError`` must be caught and turned into an
-    explicit ``typer.Exit(code=2)`` rather than leaking a traceback.
+    explicit exit with code 2 rather than leaking a traceback.
     """
-    with pytest.raises(typer.Exit) as excinfo:
+    with pytest.raises(SystemExit) as excinfo:
         cli.main(BASE_URL, endpoint="bogus")
-    assert excinfo.value.exit_code == 2
+    assert excinfo.value.code == 2
