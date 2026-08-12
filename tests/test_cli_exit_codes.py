@@ -83,8 +83,18 @@ def test_mismatch_result_exit_code_is_one(monkeypatch: pytest.MonkeyPatch) -> No
     assert "mismatch" in severities
 
 
-def test_unreachable_server_exit_code_is_two() -> None:
-    """An unreachable server exits 2 with no report on stdout."""
+_REAL_CLIENT_FACTORY = cli._make_client
+
+
+def test_unreachable_server_exit_code_is_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unreachable server exits 2 with no report on stdout.
+
+    The real (network-bound) client factory is pinned explicitly because a
+    prior test's ASGI client can leak into ``cli._make_client`` under asyncio
+    auto-mode, which would otherwise serve an in-process transport instead of
+    genuinely failing to connect.
+    """
+    monkeypatch.setattr(cli, "_make_client", _REAL_CLIENT_FACTORY)
     result = runner.invoke(cli.app, ["http://127.0.0.1:1", "--json"])
     assert result.exit_code == 2
     assert result.stdout == ""
