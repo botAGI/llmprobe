@@ -125,6 +125,31 @@ A few notes on making the gate honest and non-flaky:
   for humans and tooling to inspect; the exit code is the single stable, CI-
   relevant contract.
 
+## Использование в CI
+
+Чтобы использовать llmprobe как шлюз в пайплайне CI, достаточно запустить его
+в шаге workflow и проверить код возврата. llmprobe завершает работу с `0`,
+когда измеренная ёмкость совпадает с заявленной, и с `1` при несовпадении.
+Любой ненулевой код возврата остановит шаг и, как следствие, весь job.
+
+Ниже — пример шага GitHub Actions workflow, который запускает llmprobe против
+локального inference-сервера и проверяет код возврата. Передача
+`--claimed-ctx` делает проверку осмысленной: без неё измеренная ёмкость
+ни с чем не сравнивается, и шлюз не сможет обнаружить несоответствие.
+
+```yaml
+- name: Check inference server capacity (CI gate)
+  run: |
+    uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
+  # llmprobe exits 0 when measured capacity matches the claim and
+  # 1 when it does not. Any non-zero exit code fails this step.
+```
+
+Проверьте каждый флаг против `llmprobe --help`, прежде чем включать шаг в
+workflow. Все права на описанное здесь поведение проверяемы командами:
+`llmprobe http://localhost:8080` возвращает `0` на чистом сервере, `1` при
+несовпадении ёмкости и `2` при ошибке (недоступный сервер, транспортный сбой).
+
 ## Error handling and security
 
 - **Unreachable server**: llmprobe verifies the server is reachable before
