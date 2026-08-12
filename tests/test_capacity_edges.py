@@ -247,6 +247,45 @@ async def test_marker_variant_case_and_whitespace_is_not_silent_truncation() -> 
 
 
 @pytest.mark.asyncio
+async def test_truncated_marker_not_misclassified_as_silent_truncation() -> None:
+    """A fully-accepting server echoing a truncated marker must not be
+    labelled ``silent_truncation``.
+
+    The chat probe detects silent truncation by asking the model to echo the
+    canary marker (``ZQX7``) from the head of the prompt; a server that drops
+    the head loses the marker, which signals truncation. A server that FULLY
+    accepts the input but happens to echo a truncated form of the marker
+    (``ZQX`` instead of ``ZQX7`` — e.g. tokenised in pieces so only part
+    survives verbatim) must therefore not be misread as silent truncation. The
+    normalised ``_canary_preserved`` substring check concludes the marker did
+    not fully survive, so the probe reports an honest UNKNOWN (no measured
+    boundary) rather than a ``silent_truncation`` verdict it could not verify.
+    If the canary check ever treated ``ZQX`` as full acceptance, or any
+    degraded/missing echo as a guaranteed talent, the probe could fabricate a
+    ``silent_truncation`` cliff and this test would go red.
+    """
+    def chat(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ZQX"}}]},
+        )
+
+    async with _chat_client(chat) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            CHAT_ENDPOINT,
+            ceiling=64,
+            backend=Backend.LLAMACPP,
+            model="mock",
+        )
+
+    assert result is not None
+    assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_source in (Provenance.UNKNOWN, Provenance.MEASURED)
+
+
+@pytest.mark.asyncio
 async def test_chat_marker_absent_in_calibration_returns_unknown() -> None:
     """A chat server that cannot echo the calibration marker reports UNKNOWN.
 
