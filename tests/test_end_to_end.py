@@ -117,6 +117,7 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 def test_end_to_end_embedding_truncation_boundary_is_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,6 +170,8 @@ def test_end_to_end_embedding_truncation_boundary_is_exact(
 =======
 <<<<<<< HEAD
 >>>>>>> ee93faa (WIP: checkpoint (auto))
+=======
+>>>>>>> eca2c8f (WIP: checkpoint (auto))
 def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -201,7 +204,8 @@ def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
             f"honest server was flagged {verdict!r}, expected 'accepted' "
             "(false alarm)"
         )
-=======
+
+
 def test_end_to_end_silent_truncation_boundary_within_tolerance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -241,7 +245,6 @@ def test_end_to_end_silent_truncation_boundary_within_tolerance(
         )
         assert verdict == "silent_truncation"
         assert cap["max_accepted_tokens"]["provenance"] == "measured"
->>>>>>> 60673be (WIP: checkpoint (auto))
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
