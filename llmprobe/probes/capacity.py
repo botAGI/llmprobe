@@ -70,7 +70,7 @@ _PROPAGATED_TRANSPORT = (httpx.ConnectError, httpx.RemoteProtocolError)
 _FILLER = "tok"
 _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
-_CANARY = "llmprobeCanary"
+_CANARY = "ZQX7"
 
 # A prompt's per-request timeout grows with its token count so the server has
 # time to process a long input before replying. ``_TIMEOUT_SCALE_BASELINE`` is
@@ -393,30 +393,20 @@ async def _post_chat(
         return None
 
 
-# The minimum number of leading canary characters that still count as evidence
-# the head survived. A reply echoing only the canary's first letter is too
-# ambiguous to trust as a marker; anything at least this long is a recognisable
-# truncated marker that only a server which preserved the head could produce.
-_CANARY_PREFIX_MIN = 3
-
-
 def _canary_preserved(reply: str) -> bool:
     """Return ``True`` when the reply proves the canary (head) survived.
 
-    The canary is a distinctive marker prepended to the prompt head, so a reply
-    carrying it — in full or as a TRUNCATED prefix — is proof the head was not
-    dropped and the input was accepted. Only a reply with no trace of the marker
-    (e.g. a retained filler ``tok`` echoed when the head was discarded) means
-    silent truncation. Requiring the exact full marker would misreport a server
-    that fully accepts the input but echoes a truncated marker (e.g.
-    ``llmprobeCan`` instead of ``llmprobeCanary``) as ``silent_truncation``.
+    The canary is a single, distinctive marker prepended to the prompt head, so
+    a reply carrying it is proof the head was not dropped and the input was
+    accepted. The ``_CANARY`` value is already all-caps and contains no
+    whitespace, so we normalise the reply (strip surrounding whitespace, fold to
+    uppercase) to make the match robust against a server that adds case or
+    spacing, then look for :data:`_CANARY` as a substring. Only a reply with no
+    trace of the marker (e.g. a retained filler ``tok`` echoed when the head was
+    discarded) means silent truncation.
     """
-    if _CANARY in reply:
-        return True
-    for i in range(_CANARY_PREFIX_MIN, len(_CANARY)):
-        if _CANARY[:i] in reply:
-            return True
-    return False
+    normalized = reply.strip().upper()
+    return _CANARY in normalized
 
 
 async def _chat_classify(
