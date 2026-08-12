@@ -116,6 +116,7 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
         )
 
 
+<<<<<<< HEAD
 def test_end_to_end_embedding_truncation_boundary_is_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,6 +166,9 @@ def test_end_to_end_embedding_truncation_boundary_is_exact(
     )
 
 
+=======
+<<<<<<< HEAD
+>>>>>>> ee93faa (WIP: checkpoint (auto))
 def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -197,6 +201,47 @@ def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
             f"honest server was flagged {verdict!r}, expected 'accepted' "
             "(false alarm)"
         )
+=======
+def test_end_to_end_silent_truncation_boundary_within_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The measured cliff lands inside 5% of the server's 4096-truncation limit.
+
+    A server that claims a large context but silently truncates incoming
+    prompts at 4096 tokens must be measured as truncating near ``TRUNCATION_CTX``
+    (never a fabricated boundary) and reported with the ``silent_truncation``
+    verdict. The boundary is checked as a tolerance rather than an exact
+    equality so the test verifies genuine measurement, not mock coincidence.
+    """
+    server = make_mock_server(
+        max_tokens=TRUNCATION_CTX, behavior="silent_truncation"
+    )
+
+    result = _invoke(
+        server,
+        monkeypatch,
+        [BASE_URL, "--claimed-ctx", str(CLAIMED_CTX), "--probe", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+
+    # AUTO probes both supported endpoints; each must independently report the
+    # same measured boundary and the silent-truncation verdict.
+    assert payload["capacity"], "expected at least one measured capacity result"
+    for cap in payload["capacity"]:
+        measured = cap["max_accepted_tokens"]["value"]
+        verdict = cap["cliff_behavior"]["value"]
+        # Boundary must land within 5% of the server's real 4096 limit.
+        assert isinstance(measured, int)
+        deviation = abs(measured - TRUNCATION_CTX) / TRUNCATION_CTX
+        assert deviation <= _TRUNCATION_TOLERANCE, (
+            f"measured boundary {measured} is outside {_TRUNCATION_TOLERANCE:.0%} "
+            f"of {TRUNCATION_CTX}"
+        )
+        assert verdict == "silent_truncation"
+        assert cap["max_accepted_tokens"]["provenance"] == "measured"
+>>>>>>> 60673be (WIP: checkpoint (auto))
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
