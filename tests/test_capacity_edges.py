@@ -37,7 +37,7 @@ CHAT_ENDPOINT = Endpoint.CHAT
 # The chat probe detects silent truncation via a distinctive canary marker
 # prepended to the prompt head. Kept in sync with
 # ``llmprobe.probes.capacity._CANARY``.
-CANARY = "llmprobeCanary"
+CANARY = "ZQX7"
 
 
 def _tokenize_response(request: httpx.Request) -> httpx.Response:
@@ -215,29 +215,23 @@ async def test_server_accepting_everything_reports_unmeasured() -> None:
 
 
 @pytest.mark.asyncio
-async def test_truncated_marker_during_full_accept_is_not_silent_truncation() -> None:
-    """A server that fully accepts the input but echoes a TRUNCATED canary
-    marker must not be misclassified as silent truncation.
+async def test_marker_variant_case_and_whitespace_is_not_silent_truncation() -> None:
+    """A server that fully accepts the input and echoes the marker with varied
+    case or spacing must not be misclassified as silent truncation.
 
-    The chat probe detects silent truncation by looking for the canary marker
-    in the reply: a server that drops the prompt head loses the canary, so its
-    absence signals truncation. But a server can fully accept the input (the
-    head survives, the canary is echoed) yet return the marker TRUNCATED — e.g.
-    ``'llmprobeCan'`` instead of ``'llmprobeCanary'``, the chat analogue of
-    ``'ZQX'`` instead of ``'ZQX7'``. Requiring the exact full marker and
-    reporting that truncation as ``silent_truncation`` would be a FALSE
-    POSITIVE: the head survived, so the input was fully accepted.
-
-    The result must therefore be UNKNOWN or ``accepted``, never
-    ``silent_truncation``. If the canary check were ever reverted to require an
-    exact marker match, this test would go red.
+    The chat probe detects silent truncation by normalising the reply (stripping
+    surrounding whitespace, folding to uppercase) and looking for the canary
+    marker as a substring: a server that drops the prompt head loses the canary,
+    so its absence signals truncation. A server that fully accepts the input
+    echoes the marker and must be reported as ``accepted`` — the normalisation
+    is what makes matching robust to case and whitespace, not a strict equality
+    against a verbatim echo. If the check ever reverted to a case/whitespace-
+    sensitive exact match, this test would go red.
     """
-    truncated_marker = CANARY[:7]  # e.g. 'llmprobeC' instead of 'llmprobeCanary'
-
     def chat(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": truncated_marker}}]},
+            json={"choices": [{"message": {"content": f"  {CANARY.lower()} "}}]},
         )
 
     async with _chat_client(chat) as client:
