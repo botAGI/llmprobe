@@ -388,4 +388,10 @@ def main(
         typer.echo(to_json(report))
     else:
         _console.print(to_markdown(report))
-    raise typer.Exit(code=report.exit_code)
+
+    findings = report.findings
+    if any(f.severity == Severity.ERROR for f in findings):
+        raise typer.Exit(code=2)
+    if any(f.severity == Severity.MISMATCH for f in findings):
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
