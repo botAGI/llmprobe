@@ -272,6 +272,16 @@ def main(
             ),
         ),
     ] = True,
+    no_safe: Annotated[
+        bool,
+        typer.Option(
+            "--no-safe",
+            help=(
+                "--no-safe is an alias for --probe: send inference load to "
+                "find the real capacity cliff instead of reading config only."
+            ),
+        ),
+    ] = False,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Emit JSON instead of the markdown card."),
@@ -314,7 +324,7 @@ def main(
             probe(
                 base_url,
                 claimed_ctx,
-                safe=safe,
+                safe=safe and not no_safe,
                 endpoint=endpoint,
                 timeout=timeout,
                 api_key=api_key,
