@@ -344,6 +344,9 @@ def main(
             err=True,
         )
         sys.exit(2)
+    except ValueError as exc:
+        typer.echo(f"llmprobe: invalid endpoint: {exc}", err=True)
+        sys.exit(2)
 
     if json_output:
         typer.echo(to_json(report))
