@@ -21,6 +21,9 @@ Imports only from :mod:`llmprobe.models`.
 
 from __future__ import annotations
 
+import asyncio
+import datetime
+import email.utils
 import logging
 import math
 from collections.abc import Awaitable, Callable
@@ -88,6 +91,78 @@ _CALIBRATION_TOKENS = 64
 # timeout pathologically.
 _TIMEOUT_SCALE_BASELINE = 512
 _MAX_TIMEOUT_ALLOWANCE = 180.0
+
+# Retry budget for a rate-limited (HTTP 429) probe request. A 429 with a
+# ``Retry-After`` header is a transient "slow down" signal, not a length
+# verdict: the probe must back off per the server's instruction and retry
+# before classifying the length as ``hard_error``. ``_RETRY_429_ATTEMPTS``
+# bounds how many times we retry; the retry honours the server's requested
+# ``Retry-After`` delay, capped at ``_RETRY_429_MAX_SLEEP_SECONDS`` so an
+# adversarial header cannot stall the whole probe. Only ``429`` is retried —
+# a different 4xx/5xx is a real rejection and is returned as-is.
+_RETRY_429_ATTEMPTS = 3
+_RETRY_429_MAX_SLEEP_SECONDS = 5.0
+_RETRY_429_FALLBACK_SLEEP_SECONDS = 0.5
+
+
+def _retry_after_delay(resp: httpx.Response) -> float:
+    """The seconds to back off for a rate-limited response.
+
+    ``Retry-After`` may carry a bare delay in seconds or an ``HTTP-date``. A
+    bare ``seconds`` value is returned directly; an ``HTTP-date`` is honoured
+    as the seconds until that instant. A header we cannot parse falls back to
+    a nominal :data:`_RETRY_429_FALLBACK_SLEEP_SECONDS` so the caller never
+    spins synchronously without pause.
+    """
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return _RETRY_429_FALLBACK_SLEEP_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return _RETRY_429_FALLBACK_SLEEP_SECONDS
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    delay = (
+        when - datetime.datetime.now(datetime.timezone.utc)
+    ).total_seconds()
+    return max(0.0, delay)
+
+
+async def _post_retry_429(
+    client: httpx.AsyncClient,
+    url: str,
+    body: dict,
+    timeout: httpx.Timeout,
+) -> httpx.Response:
+    """POST ``body`` to ``url`` retrying transient HTTP 429 rate limits.
+
+    A 429 (Too Many Requests) with a ``Retry-After`` header signals that the
+    server is temporarily rate-limiting us, not that the probed length was
+    rejected. We wait out the server's ``Retry-After`` window (capped at
+    :data:`_RETRY_429_MAX_SLEEP_SECONDS`) and retry up to
+    :data:`_RETRY_429_ATTEMPTS` times so a transient throttle is not mistaken
+    for a hard boundary. A successful response or any non-429 status is
+    returned as-is; if every attempt remains rate-limited, the last 429 is
+    returned so the caller classifies the length honestly.
+    """
+    last: httpx.Response | None = None
+    for attempt in range(_RETRY_429_ATTEMPTS):
+        resp = await client.post(url, json=body, timeout=timeout)
+        if resp.status_code != 429:
+            return resp
+        last = resp
+        if attempt < _RETRY_429_ATTEMPTS - 1:
+            delay = min(
+                _retry_after_delay(resp), _RETRY_429_MAX_SLEEP_SECONDS
+            )
+            await asyncio.sleep(delay)
+    assert last is not None
+    return last
 
 # Tell the model to echo the first word so we can check whether the head
 # (which begins with the canary) survived the server's context handling.
@@ -217,12 +292,19 @@ async def _post_embed(
     model: str,
     timeout: httpx.Timeout,
 ) -> list[float] | None:
-    """POST one embedding to ``endpoint``; return the vector on 200 else ``None``."""
+    """POST one embedding to ``endpoint``; return the vector on 200 else ``None``.
+
+    A transient HTTP 429 (rate limit) is retried with backoff honouring the
+    server's ``Retry-After`` header via :func:`_post_retry_429` so a throttle
+    is not mistaken for a rejected length; a non-200 that survives the retry
+    budget yields ``None``.
+    """
     base = base_url.rstrip("/")
-    resp = await client.post(
+    resp = await _post_retry_429(
+        client,
         f"{base}{endpoint}",
-        json={"input": prompt, "model": model},
-        timeout=timeout,
+        {"input": prompt, "model": model},
+        timeout,
     )
     if resp.status_code != 200:
         return None
@@ -376,22 +458,26 @@ async def _post_chat(
 
     The request carries a system instruction telling the model to reply with
     the first word of the user message. The canary marker is the first word, so
-    the reply echoes it only when the head of the prompt survived. Transport
-    failures propagate (an unreachable server must surface as an
-    ``httpx.HTTPError``, never a fabricated ``hard_error``); only a non-200
-    status or an unparsable body yields ``None``.
+    the reply echoes it only when the head of the prompt survived. A transient
+    HTTP 429 (rate limit) is retried with backoff honouring the server's
+    ``Retry-After`` header via :func:`_post_retry_429` so a throttle is not
+    mistaken for a rejected length. Transport failures propagate (an
+    unreachable server must surface as an ``httpx.HTTPError``, never a
+    fabricated ``hard_error``); only a non-200 status or an unparsable body
+    yields ``None``.
     """
     base = base_url.rstrip("/")
-    resp = await client.post(
+    resp = await _post_retry_429(
+        client,
         f"{base}{path}",
-        json={
+        {
             "model": model,
             "messages": [
                 {"role": "system", "content": _CANARY_INSTRUCTION},
                 {"role": "user", "content": prompt},
             ],
         },
-        timeout=timeout,
+        timeout,
     )
     if resp.status_code != 200:
         return None
