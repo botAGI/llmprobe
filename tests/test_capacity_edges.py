@@ -362,3 +362,42 @@ async def test_429_with_retry_after_retries_and_succeeds() -> None:
     assert result is not None
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
     assert result.cliff_behavior != CliffBehavior.HARD_ERROR
+
+
+@pytest.mark.asyncio
+async def test_truncated_marker_on_full_accepted_input_is_not_silent_truncation() -> None:
+    """A server that accepts the whole input but drops a digit from the canary
+    must not be misclassified as silent truncation.
+
+    The chat probe hunts silent truncation via the canary marker ``ZQX7`` at
+    the prompt head: a server that silently drops the head loses the canary and
+    is flagged ``silent_truncation``. Here the server accepts every input (no
+    head is ever dropped) yet its replies carry only the truncated marker
+    ``ZQX`` — the canary echo is unreliable, so the probe's marker-echo
+    mechanism cannot be trusted and it must report an honest ``UNKNOWN`` rather
+    than a confident ``silent_truncation`` verdict built on a marker it could
+    not actually verify. If the canary check ever degraded to a sloppy
+    substring/prefix match that let ``ZQX`` stand in for ``ZQX7``, the
+    calibration would spuriously pass and the search would misclassify this
+    honest server as ``silent_truncation`` — this test would go red.
+    """
+
+    def chat(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ZQX"}}]},
+        )
+
+    async with _chat_client(chat) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            CHAT_ENDPOINT,
+            ceiling=64,
+            backend=Backend.LLAMACPP,
+            model="mock",
+        )
+
+    assert result is not None
+    assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_source == Provenance.UNKNOWN
