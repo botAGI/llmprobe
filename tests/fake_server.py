@@ -2,18 +2,28 @@
 
 Run it manually to sanity-check truncation behavior against a real client:
 
-    python -m tests.fake_server --port 8765 --limit 8 --mode refuse
-    python -m tests.fake_server --port 8765 --limit 8 --mode silent
+    python -m tests.fake_server --port 8765 --truncate-len 8 --mode refuse
+    python -m tests.fake_server --port 8765 --truncate-len 8 --mode silent
 
-It exposes a single ``POST /echo`` endpoint that mirrors the input it
-receives. Two modes are supported, chosen at server start:
+It exposes a ``POST /echo`` endpoint that mirrors the input it receives. Two
+modes are supported, chosen at server start:
 
-* ``refuse`` — when the request payload is longer than ``--limit``, respond
-  with HTTP 400 and an error body instead of echoing.
-* ``silent`` — truncate the payload to ``--limit`` bytes and echo the
-  truncated version with HTTP 200, without indicating anything was dropped.
+* ``refuse`` — when the request payload is longer than ``--truncate-len``,
+  respond with HTTP 400 and an error body instead of echoing.
+* ``silent`` — truncate the payload to ``--truncate-len`` characters and echo
+  the truncated version with HTTP 200, without indicating anything was dropped.
 
-The endpoint accepts any JSON payload; only its ``input`` field is inspected.
+It also serves a llama.cpp-shaped compatibility surface so a probe can observe
+server-declared limits and per-slot state:
+
+* ``GET /props`` — server properties; deliberately omits ``n_ubatch`` (and
+  ``n_batch``) so a probe cannot rely on them being present.
+* ``GET /slots`` — per-slot state as a list. With ``--no-slots`` the endpoint
+  answers ``501`` (slots disabled), exactly like a real llama.cpp server run
+  without slots.
+
+The truncation endpoint accepts any JSON payload; only its ``input`` field is
+inspected.
 """
 
 from __future__ import annotations
@@ -21,27 +31,41 @@ from __future__ import annotations
 import argparse
 import sys
 
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request, Response
 import uvicorn
 
 RequestModel = dict
 
+DEFAULT_MAX_TOKENS = 4096
+
 
 class FakeServer:
-    """A truncating HTTP server.
+    """A truncating HTTP server with a llama.cpp-shaped compatibility surface.
 
-    ``limit`` is the maximum number of characters allowed in the ``input``
-    field. ``mode`` selects refusal vs silent truncation (see module docstring).
+    ``truncate_len`` is the maximum number of characters allowed in the
+    ``input`` field. ``mode`` selects refusal vs silent truncation (see module
+    docstring). ``no_slots`` makes ``/slots`` answer ``501``.
     """
 
-    def __init__(self, limit: int, mode: str) -> None:
-        if limit < 0:
-            raise ValueError(f"limit must be non-negative, got {limit}")
+    def __init__(
+        self,
+        truncate_len: int,
+        mode: str,
+        no_slots: bool = False,
+        total_slots: int = 1,
+    ) -> None:
+        if truncate_len < 0:
+            raise ValueError(
+                f"truncate_len must be non-negative, got {truncate_len}"
+            )
         if mode not in ("refuse", "silent"):
             raise ValueError(f"unknown mode: {mode!r}")
-        self._limit = limit
+        if total_slots <= 0:
+            raise ValueError(f"total_slots must be positive, got {total_slots}")
+        self._truncate_len = truncate_len
         self._mode = mode
+        self._no_slots = no_slots
+        self._total_slots = total_slots
 
     def build(self) -> FastAPI:
         app = FastAPI(title="fake-truncating-server")
@@ -51,22 +75,59 @@ class FakeServer:
             body: RequestModel = await request.json()
             raw = body.get("input", "")
             text = raw if isinstance(raw, str) else str(raw)
-            if self._mode == "refuse" and len(text) > self._limit:
+            if self._mode == "refuse" and len(text) > self._truncate_len:
                 raise HTTPException(
                     status_code=400,
                     detail={
                         "input_length": len(text),
-                        "limit": self._limit,
+                        "truncate_len": self._truncate_len,
                         "message": "input exceeds length limit",
                     },
                 )
-            truncated = text[: self._limit]
+            truncated = text[: self._truncate_len]
             return {
                 "mode": self._mode,
-                "limit": self._limit,
+                "truncate_len": self._truncate_len,
                 "input": truncated,
                 "input_length": len(truncated),
             }
+
+        @app.get("/props")
+        def props() -> dict:
+            # llama.cpp shape. Deliberately omits n_batch / n_ubatch.
+            return {
+                "total_slots": self._total_slots,
+                "default_generation_settings": {
+                    "n_ctx": DEFAULT_MAX_TOKENS,
+                },
+                "build_info": {
+                    "build": 0,
+                    "commit": "fake",
+                    "version": "0.0.0",
+                },
+            }
+
+        @app.get("/slots")
+        def slots(response: Response) -> list | dict:
+            if self._no_slots:
+                # --no-slots mode: a real llama.cpp server answers 501 here.
+                response.status_code = 501
+                return {
+                    "error": {
+                        "message": "slots disabled",
+                        "type": "server_error",
+                        "code": 501,
+                    }
+                }
+            return [
+                {
+                    "id": index,
+                    "state": 1,
+                    "n_ctx": DEFAULT_MAX_TOKENS,
+                    "is_processing": False,
+                }
+                for index in range(self._total_slots)
+            ]
 
         return app
 
@@ -79,7 +140,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1", help="bind host")
     parser.add_argument("--port", type=int, default=8765, help="bind port")
     parser.add_argument(
-        "--limit",
+        "--truncate-len",
         type=int,
         required=True,
         help="maximum input length in characters",
@@ -90,12 +151,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="truncation behavior",
     )
+    parser.add_argument(
+        "--total-slots",
+        type=int,
+        default=1,
+        help="number of llama.cpp slots to advertise in /props",
+    )
+    parser.add_argument(
+        "--no-slots",
+        action="store_true",
+        help="make /slots answer 501 (slots disabled)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    server = FakeServer(args.limit, args.mode)
+    server = FakeServer(
+        args.truncate_len,
+        args.mode,
+        no_slots=args.no_slots,
+        total_slots=args.total_slots,
+    )
     uvicorn.run(server.build(), host=args.host, port=args.port, log_level="info")
     return 0
 
