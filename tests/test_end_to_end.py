@@ -114,6 +114,55 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
         )
 
 
+def test_end_to_end_embedding_truncation_boundary_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fake embeddings server that truncates at max_tokens is caught exactly.
+
+    Against a locally raised fake embeddings server that genuinely discards
+    input past ``max_tokens`` (the tail-collapse two-prompt method), the real
+    CLI driven end to end must report a measured boundary of EXACTLY
+    ``max_tokens`` -- never off by one, never an approximate estimate. A
+    boundary one token away (``max_tokens-1`` or ``max_tokens+1``), a
+    non-exact token count, or a misclassified cliff all mean the probe got the
+    edge of the truncation wrong, and this test must turn red.
+    """
+    truncation_limit = 384
+    server = make_mock_server(max_tokens=truncation_limit, behavior="silent_truncation")
+
+    result = _invoke(
+        server,
+        monkeypatch,
+        [BASE_URL, "--endpoint", "embeddings", "--probe", "--json"],
+    )
+
+    # No --claimed-ctx, so the server truncating at 384 is not a mismatch; the
+    # value of this test is that the measured edge is EXACT, not the exit code.
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.output)
+
+    # The probe must have exercised exactly the embeddings endpoint only.
+    entries = payload["capacity"]
+    assert [e["endpoint"]["value"] for e in entries] == ["/v1/embeddings"], entries
+
+    # The measured boundary must be EXACTLY the truncation limit.
+    entry = entries[0]
+    assert entry["max_accepted_tokens"]["value"] == truncation_limit, (
+        f"boundary off: expected {truncation_limit}, got "
+        f"{entry['max_accepted_tokens']}"
+    )
+    assert entry["max_accepted_tokens"]["provenance"] == "measured", (
+        "the boundary must be measured, not guessed"
+    )
+    assert entry["token_count_exact"]["value"] is True, (
+        "the boundary token count must be verified exactly via /tokenize"
+    )
+    assert entry["cliff_behavior"]["value"] == "silent_truncation", (
+        "the fake server silently drops the tail; the probe must say so"
+    )
+
+
 def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
