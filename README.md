@@ -125,7 +125,7 @@ A few notes on making the gate honest and non-flaky:
   for humans and tooling to inspect; the exit code is the single stable, CI-
   relevant contract.
 
-## Использование в CI
+## Использование как гейта в CI
 
 Чтобы использовать llmprobe как шлюз в пайплайне CI, достаточно запустить его
 в шаге workflow и проверить код возврата. llmprobe завершает работу с `0`,
