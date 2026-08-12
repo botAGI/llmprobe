@@ -244,3 +244,36 @@ async def test_marker_variant_case_and_whitespace_is_not_silent_truncation() -> 
         CliffBehavior.ACCEPTED,
     )
     assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
+
+
+@pytest.mark.asyncio
+async def test_chat_marker_absent_in_calibration_returns_unknown() -> None:
+    """A chat server that cannot echo the calibration marker reports UNKNOWN.
+
+    Before measuring any cliff, the chat probe sends a short calibration input
+    whose head carries the ``ZQX7`` marker and verifies the reply echoes it.
+    When the server answers 200 but the marker is absent from the reply (the
+    marker-echo mechanism is untrustworthy even for a certainly-accepted short
+    input), the probe must report an honest UNKNOWN result — ``max_accepted_
+    source == UNKNOWN`` with no measured boundary — rather than a confident
+    ``silent_truncation`` verdict it could not reliably obtain.
+    """
+    def chat(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "wrongword"}}]},
+        )
+
+    async with _chat_client(chat) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            CHAT_ENDPOINT,
+            ceiling=64,
+            backend=Backend.LLAMACPP,
+            model="mock",
+        )
+
+    assert result is not None
+    assert result.max_accepted_source == Provenance.UNKNOWN
+    assert result.max_accepted_tokens == 0

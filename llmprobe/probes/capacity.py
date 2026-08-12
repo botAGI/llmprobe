@@ -72,6 +72,14 @@ _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
 _CANARY = "ZQX7"
 
+# Before trusting any marker-based silent-truncation verdict we verify that the
+# server can echo the canary marker (``_CANARY``) from the head of a short,
+# certainly-accepted input at all. ``_CALIBRATION_TOKENS`` is that short input's
+# length. A server that cannot echo the marker even here cannot be probed for
+# truncation this way, so the whole measurement reports UNKNOWN rather than a
+# confident ``silent_truncation`` verdict.
+_CALIBRATION_TOKENS = 64
+
 # A prompt's per-request timeout grows with its token count so the server has
 # time to process a long input before replying. ``_TIMEOUT_SCALE_BASELINE`` is
 # the token count that receives the caller's base timeout unchanged; longer
@@ -409,6 +417,36 @@ def _canary_preserved(reply: str) -> bool:
     return _CANARY in normalized
 
 
+async def _chat_calibration_passes(
+    client: httpx.AsyncClient,
+    base_url: str,
+    path: str,
+    model: str,
+    timeout: httpx.Timeout,
+) -> bool:
+    """Return whether the chat marker-echo mechanism works on this server.
+
+    The chat probe detects silent truncation by placing a marker at the head of
+    the prompt and asking the model to echo the first word. That check is only
+    meaningful if the marker-echo mechanism works at all, so we calibrate first:
+    send a short (``_CALIBRATION_TOKENS``-token) input whose head is the canary
+    (``_CANARY``) and verify the reply echoes it back (via the same normalised
+    :func:`_canary_preserved` check the real search trusts). A server that
+    cannot echo the marker even for a short, certainly-accepted input cannot be
+    probed for truncation this way, so the caller reports UNKNOWN instead of a
+    confident ``silent_truncation`` verdict. Returns ``True`` when the marker
+    survives, ``False`` when it does not (or no usable reply came back).
+    """
+    tail = await _n_token_prompt(
+        client, base_url, max(_CALIBRATION_TOKENS - 1, 0), _FILLER, timeout
+    )
+    prompt = f"{_CANARY} " + tail
+    reply = await _post_chat(client, base_url, path, prompt, model, timeout)
+    if reply is None:
+        return False
+    return _canary_preserved(reply)
+
+
 async def _chat_classify(
     client: httpx.AsyncClient,
     base_url: str,
@@ -522,6 +560,26 @@ def _transport_result(endpoint: str, requests_used: int) -> CapacityResult:
     The probe could not reach a verdict, so there is no measured boundary: the
     token count is ``0`` and its provenance is ``UNKNOWN`` — we honestly report
     that capacity could not be determined rather than fabricating a cliff.
+    """
+    return CapacityResult(
+        endpoint=endpoint,
+        max_accepted_tokens=0,
+        max_accepted_source=Provenance.UNKNOWN,
+        token_count_exact=False,
+        cliff_behavior=CliffBehavior.TRANSPORT_ERROR,
+        probe_requests_used=requests_used,
+    )
+
+
+def _calibration_failed_result(endpoint: str, requests_used: int) -> CapacityResult:
+    """A ``CapacityResult`` marking a marker-echo calibration that failed.
+
+    The chat probe's whole silent-truncation method depends on the server
+    echoing a marker from the head of the prompt. When even the short
+    calibration input does not echo it back, the method cannot be trusted, so we
+    report UNKNOWN (no measured boundary, ``max_accepted_source == UNKNOWN``)
+    instead of a confident ``silent_truncation`` verdict that the calibration
+    shows we could not reliably obtain.
     """
     return CapacityResult(
         endpoint=endpoint,
@@ -685,6 +743,14 @@ async def probe_capacity(
         exact = await _exact_tokenization_available(client, base_url, per_request)
 
     if path.rstrip("/").endswith("/chat/completions"):
+        # Calibrate the marker-echo mechanism before trusting any
+        # silent-truncation verdict: the short calibration input must echo the
+        # canary (``_CANARY``) back or the whole method is unreliable.
+        requests[0] += 1
+        if not await _chat_calibration_passes(
+            client, base_url, path, model, per_request
+        ):
+            return _calibration_failed_result(path, requests[0])
         return await _binary_search_chat(
             client, base_url, path, ceiling, exact, model, requests, per_request
         )
