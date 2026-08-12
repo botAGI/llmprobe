@@ -393,6 +393,32 @@ async def _post_chat(
         return None
 
 
+# The minimum number of leading canary characters that still count as evidence
+# the head survived. A reply echoing only the canary's first letter is too
+# ambiguous to trust as a marker; anything at least this long is a recognisable
+# truncated marker that only a server which preserved the head could produce.
+_CANARY_PREFIX_MIN = 3
+
+
+def _canary_preserved(reply: str) -> bool:
+    """Return ``True`` when the reply proves the canary (head) survived.
+
+    The canary is a distinctive marker prepended to the prompt head, so a reply
+    carrying it — in full or as a TRUNCATED prefix — is proof the head was not
+    dropped and the input was accepted. Only a reply with no trace of the marker
+    (e.g. a retained filler ``tok`` echoed when the head was discarded) means
+    silent truncation. Requiring the exact full marker would misreport a server
+    that fully accepts the input but echoes a truncated marker (e.g.
+    ``llmprobeCan`` instead of ``llmprobeCanary``) as ``silent_truncation``.
+    """
+    if _CANARY in reply:
+        return True
+    for i in range(_CANARY_PREFIX_MIN, len(_CANARY)):
+        if _CANARY[:i] in reply:
+            return True
+    return False
+
+
 async def _chat_classify(
     client: httpx.AsyncClient,
     base_url: str,
@@ -437,7 +463,7 @@ async def _chat_classify(
         return "transport_error"
     if reply is None:
         return "hard_error"
-    if _CANARY not in reply:
+    if not _canary_preserved(reply):
         logger.info(
             "%s confirmed for chat: head silently discarded at length %d; "
             "canary %r absent from the reply",

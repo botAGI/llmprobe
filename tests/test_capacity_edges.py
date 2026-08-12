@@ -30,6 +30,15 @@ EMBEDDINGS = "/v1/embeddings"
 
 EMBED_ENDPOINT = Endpoint.EMBEDDINGS
 
+CHAT = "/v1/chat/completions"
+
+CHAT_ENDPOINT = Endpoint.CHAT
+
+# The chat probe detects silent truncation via a distinctive canary marker
+# prepended to the prompt head. Kept in sync with
+# ``llmprobe.probes.capacity._CANARY``.
+CANARY = "llmprobeCanary"
+
 
 def _tokenize_response(request: httpx.Request) -> httpx.Response:
     """Mirror the scripted mock's ``/tokenize``: one token per word.
@@ -59,6 +68,27 @@ def _embeddings_client(embed_handler) -> httpx.AsyncClient:
             return _tokenize_response(request)
         if request.url.path == EMBEDDINGS:
             return embed_handler(request)
+        return httpx.Response(404, text="not found")
+
+    return httpx.AsyncClient(
+        base_url=BASE_URL, transport=httpx.MockTransport(handler)
+    )
+
+
+def _chat_client(chat_handler) -> httpx.AsyncClient:
+    """Client whose ``/tokenize`` works and whose chat replies obey a handler.
+
+    ``chat_handler`` is called with the request and must return an
+    ``httpx.Response`` (or raise) for :data:`CHAT`; ``/tokenize`` is always
+    served a valid one-token-per-word payload so the probe can build exact
+    ``n``-token prompts.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/tokenize":
+            return _tokenize_response(request)
+        if request.url.path == CHAT:
+            return chat_handler(request)
         return httpx.Response(404, text="not found")
 
     return httpx.AsyncClient(
@@ -182,3 +212,41 @@ async def test_server_accepting_everything_reports_unmeasured() -> None:
     assert result.max_accepted_tokens == 32768
     assert result.cliff_behavior == CliffBehavior.ACCEPTED
     assert result.max_accepted_source == Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_truncated_marker_during_full_accept_is_not_silent_truncation() -> None:
+    """A server that fully accepts the input but echoes a TRUNCATED canary
+    marker must not be misclassified as silent truncation.
+
+    The chat probe detects silent truncation by looking for the canary marker
+    in the reply: a server that drops the prompt head loses the canary, so its
+    absence signals truncation. But a server can fully accept the input (the
+    head survives, the canary is echoed) yet return the marker TRUNCATED — e.g.
+    ``'llmprobeCan'`` instead of ``'llmprobeCanary'``, the chat analogue of
+    ``'ZQX'`` instead of ``'ZQX7'``. Requiring the exact full marker and
+    reporting that truncation as ``silent_truncation`` would be a FALSE
+    POSITIVE: the head survived, so the input was fully accepted.
+
+    The result must therefore be UNKNOWN or ``accepted``, never
+    ``silent_truncation``. If the canary check were ever reverted to require an
+    exact marker match, this test would go red.
+    """
+    truncated_marker = CANARY[:7]  # e.g. 'llmprobeC' instead of 'llmprobeCanary'
+
+    def chat(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": truncated_marker}}]},
+        )
+
+    async with _chat_client(chat) as client:
+        result = await probe_capacity(
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=64, backend=Backend.LLAMACPP, model="mock"
+        )
+
+    assert result is not None
+    assert result.cliff_behavior in (
+        CliffBehavior.ACCEPTED,
+    )
+    assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
