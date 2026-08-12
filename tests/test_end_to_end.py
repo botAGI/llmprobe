@@ -148,6 +148,44 @@ def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
         )
 
 
+TRUNCATION_CTX = 4096
+_TRUNCATION_TOLERANCE = 0.05
+
+
+def test_end_to_end_truncation_at_4096_is_measured_within_five_percent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4096-token silent truncation is caught with a measured, honest border.
+
+    A server that silently drops input past 4096 tokens must be flagged as
+    ``silent_truncation``, and the measured boundary (the largest accepted
+    length) must land within ±5% of the true 4096-token cut, so the probe
+    reports the real cliff instead of an overconfident or fabricated guess.
+    """
+    server = make_mock_server(max_tokens=TRUNCATION_CTX, behavior="silent_truncation")
+
+    result = _invoke(server, monkeypatch, [BASE_URL, "--probe", "--json"])
+
+    payload = json.loads(result.output)
+
+    assert payload["capacity"], "expected the capacity probe to report"
+    for entry in payload["capacity"]:
+        verdict = entry["cliff_behavior"]["value"]
+        assert verdict == "silent_truncation", (
+            f"truncating server was classified {verdict!r}, expected "
+            "'silent_truncation'"
+        )
+
+        boundary = entry["max_accepted_tokens"]["value"]
+        tolerance = TRUNCATION_CTX * _TRUNCATION_TOLERANCE
+        lower = TRUNCATION_CTX - tolerance
+        upper = TRUNCATION_CTX + tolerance
+        assert lower <= boundary <= upper, (
+            f"measured boundary {boundary} deviates from the true 4096-token "
+            f"cut by more than {_TRUNCATION_TOLERANCE:.0%}"
+        )
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
