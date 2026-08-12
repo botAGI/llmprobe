@@ -25,6 +25,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
+import pytest
+import typer
+from typer.testing import CliRunner
+
+import llmprobe.cli as cli
 from llmprobe.models import (
     Backend,
     CapacityResult,
@@ -36,9 +42,14 @@ from llmprobe.models import (
     Severity,
 )
 from llmprobe.report import to_json, to_json_schema
+from tests.mocks.server import make_mock_server
 
 # The provenance marker on a reported value must always be one of these.
 _PROVENANCES = ["read", "measured", "inferred", "unknown"]
+
+_BASE_URL = "http://mock"
+
+_runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +456,132 @@ def test_json_schema_mode_produces_compatible_report_document() -> None:
     assert "config" in schema["properties"]
     assert "capacity" in schema["properties"]
     assert "findings" in schema["properties"]
+
+
+# ---------------------------------------------------------------------------
+# CLI-invocation scenario tests: run the real ``llmprobe --json`` command (not
+# just ``to_json``) hermetically against the scripted mock, and validate the
+# emitted report against the provenance contract on three scenarios — clean,
+# divergence (mismatch), error. The contract is pinned by ``REPORT_SCHEMA``
+# rather than the ``--json-schema`` pydantic dump, because ``to_json`` emits a
+# provenance-augmented shape that ``ProbeReport.model_json_schema`` does not
+# describe; calling ``--json-schema`` separately confirms its root sections
+# still agree with the contract the tests validate against.
+# ---------------------------------------------------------------------------
+
+
+def _asgi_client(app: object, api_key: str | None = None):
+    def make(
+        _base_url: str,
+        _api_key: str | None = None,
+        timeout: float = 10.0,
+        **_kwargs,
+    ) -> httpx.AsyncClient:
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return httpx.AsyncClient(
+            base_url=_BASE_URL,
+            transport=httpx.ASGITransport(app=app),
+            timeout=httpx.Timeout(timeout),
+            headers=headers,
+        )
+
+    return make
+
+
+def _invoke(
+    app,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    api_key: str | None = None,
+):
+    monkeypatch.setattr(cli, "_make_client", _asgi_client(app, api_key))
+    return _runner.invoke(cli.app, args)
+
+
+def _cli_options() -> set[str]:
+    cmd = typer.main.get_command(cli.app)
+    return {
+        opt
+        for p in cmd.params
+        for opt in list(p.opts) + list(getattr(p, "secondary_opts", []) or [])
+    }
+
+
+def test_cli_declares_json_and_json_schema_options() -> None:
+    """``--json`` and ``--json-schema`` are real CLI options (introspected)."""
+    opts = _cli_options()
+    assert "--json" in opts
+    assert "--json-schema" in opts
+
+
+def test_json_schema_command_emits_contract_root() -> None:
+    """``llmprobe --json-schema`` emits a schema naming the four report sections.
+
+    The pydantic schema does not describe the provenance-augmented ``--json``
+    shape (which is why ``REPORT_SCHEMA`` is the validation contract), but it
+    must still agree on the top-level root sections so the CLI's schema command
+    does not drift from the contract the scenario tests validate against.
+    """
+    result = _runner.invoke(cli.app, ["--json-schema"])
+    assert result.exit_code == 0, result.output
+    schema = json.loads(result.stdout)
+    assert schema["type"] == "object"
+    assert set(schema["properties"]) >= {"base_url", "config", "capacity", "findings"}
+
+
+def test_clean_report_via_cli_validates_against_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``llmprobe --json`` on a clean server emits a schema-valid, empty report."""
+    server = make_mock_server(max_tokens=8192, behavior="honest")
+    result = _invoke(server, monkeypatch, [_BASE_URL, "--probe", "--json"])
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.stdout)
+    assert report["findings"] == []
+    validate(report, REPORT_SCHEMA)
+
+
+def test_mismatch_report_via_cli_validates_against_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A divergent (mismatch) ``--json`` report still validates against the schema.
+
+    The silent-truncation server with a claimed 8192 ctx forces a mismatch
+    finding (exit 1); the emitted report must remain schema-valid.
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    result = _invoke(
+        server,
+        monkeypatch,
+        [_BASE_URL, "--claimed-ctx", "8192", "--probe", "--json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.stdout)
+    assert {f["severity"]["value"] for f in report["findings"]} == {"mismatch"}
+    validate(report, REPORT_SCHEMA)
+
+
+def test_error_report_via_cli_validates_against_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error-severity ``--json`` report still validates against the schema.
+
+    An unauthenticated probe against a key-protected mock surfaces an
+    ``GENERIC_MODELS_HTTP_ERROR`` finding (exit 2); the error report must
+    remain schema-valid.
+    """
+    server = make_mock_server(
+        max_tokens=512, behavior="honest", required_token="right"
+    )
+    result = _invoke(
+        server, monkeypatch, [_BASE_URL, "--json"], api_key="wrong"
+    )
+
+    assert result.exit_code == 2, result.output
+    report = json.loads(result.stdout)
+    assert {f["severity"]["value"] for f in report["findings"]} == {"error"}
+    validate(report, REPORT_SCHEMA)
