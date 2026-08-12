@@ -13,6 +13,7 @@ Imports only from :mod:`llmprobe.models`, the probe modules, and
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Annotated
 
 import httpx
@@ -342,7 +343,7 @@ def main(
             f"{redact_base_url(str(exc))}",
             err=True,
         )
-        raise typer.Exit(code=2) from exc
+        sys.exit(2)
 
     if json_output:
         typer.echo(to_json(report))
