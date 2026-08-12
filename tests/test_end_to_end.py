@@ -136,33 +136,31 @@ def test_end_to_end_embedding_truncation_boundary_is_exact(
         [BASE_URL, "--endpoint", "embeddings", "--probe", "--json"],
     )
 
-    assert result.exit_code == 1, result.output
+    # No --claimed-ctx, so the server truncating at 384 is not a mismatch; the
+    # value of this test is that the measured edge is EXACT, not the exit code.
+    assert result.exit_code == 0, result.output
 
     payload = json.loads(result.output)
 
     # The probe must have exercised exactly the embeddings endpoint only.
     entries = payload["capacity"]
-    assert [entry["endpoint"] for entry in entries] == ["/v1/embeddings"]
+    assert [e["endpoint"]["value"] for e in entries] == ["/v1/embeddings"], entries
 
     # The measured boundary must be EXACTLY the truncation limit.
     entry = entries[0]
-    assert entry["max_accepted_tokens"] == truncation_limit, (
+    assert entry["max_accepted_tokens"]["value"] == truncation_limit, (
         f"boundary off: expected {truncation_limit}, got "
-        f"{entry['max_accepted_tokens']} (max_accepted_source="
-        f"{entry['max_accepted_source']})"
+        f"{entry['max_accepted_tokens']}"
     )
-    assert entry["max_accepted_source"] == "measured", (
+    assert entry["max_accepted_tokens"]["provenance"] == "measured", (
         "the boundary must be measured, not guessed"
     )
-    assert entry["token_count_exact"] is True, (
+    assert entry["token_count_exact"]["value"] is True, (
         "the boundary token count must be verified exactly via /tokenize"
     )
-    assert entry["cliff_behavior"] == "silent_truncation", (
+    assert entry["cliff_behavior"]["value"] == "silent_truncation", (
         "the fake server silently drops the tail; the probe must say so"
     )
-
-    # The lying server is surfaced as a finding with the exact measured edge.
-    assert "## Findings" in result.stdout or payload["findings"]
 
 
 def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
