@@ -49,6 +49,22 @@ _console = Console()
 
 _API_KEY_ENV = "LLMPROBE_API_KEY"
 
+
+@app.callback(invoke_without_command=True)
+def _help_when_no_args(ctx: typer.Context) -> None:
+    """Show help and exit 0 when invoked with no arguments.
+
+    The README documents ``uvx llmprobe`` with no arguments (the install /
+    discovery step), but every real probe needs a ``BASE_URL``. Rather than
+    failing with a "BASE_URL is required" usage error, an argument-less
+    invocation prints the full help and exits 0 so the tool never crashes on
+    the documented first step.
+    """
+    if ctx.invoked_subcommand is None:
+        print(ctx.get_help())
+        raise typer.Exit(0)
+
+
 #: Default per-request timeout in seconds (applied to every HTTP request).
 #: Generous by design: probing long inputs can exceed a short timeout, and the
 #: capacity probe scales this base up proportionally to the prompt's token
