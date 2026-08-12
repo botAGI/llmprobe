@@ -72,12 +72,18 @@ def _coerce_endpoint(endpoint: Endpoint | str) -> Endpoint:
     valid selections. Because the enum is a ``str``-backed ``Endpoint``, a
     string value such as ``'chat'`` is coerced here to ``Endpoint.CHAT`` so the
     CLI accepts the documented spelling rather than demanding ``Endpoint.CHAT``.
+
+    ``'choice'`` is accepted as a synonym for ``auto`` (the deliberate default
+    that resolves per backend), matching the prose use of "choice" in the README.
     """
     if isinstance(endpoint, Endpoint):
         return endpoint
     if isinstance(endpoint, str):
+        value = endpoint.lower()
+        if value == "choice":
+            return Endpoint.AUTO
         try:
-            return Endpoint(endpoint.lower())
+            return Endpoint(value)
         except ValueError:
             raise ValueError(
                 f"unknown endpoint: {endpoint!r} (expected one of "
