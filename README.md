@@ -133,22 +133,35 @@ A few notes on making the gate honest and non-flaky:
 Любой ненулевой код возврата остановит шаг и, как следствие, весь job.
 
 Ниже — пример шага GitHub Actions workflow, который запускает llmprobe против
-локального inference-сервера и проверяет код возврата. Передача
+локального inference-сервера с `--json` и проверяет код возврата. `--json`
+выдаёт машинночитаемый отчёт на stdout (его можно сохранить как артефакт или
+разобрать в следующем шаге), а решение о том, пройден ли шлюз, принимается по
+коду возврата — это единственный стабильный для CI контракт. Передача
 `--claimed-ctx` делает проверку осмысленной: без неё измеренная ёмкость
 ни с чем не сравнивается, и шлюз не сможет обнаружить несоответствие.
 
 ```yaml
 - name: Check inference server capacity (CI gate)
   run: |
-    uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
-  # llmprobe exits 0 when measured capacity matches the claim and
-  # 1 when it does not. Any non-zero exit code fails this step.
+    uvx llmprobe http://localhost:8080 --json --probe --claimed-ctx 8192 \
+      > llmprobe-report.json
+    exit_code=$?
+    # llmprobe exits 0 when measured capacity matches the claim,
+    # 1 when it does not, and 2 on error. Preserve the report artifact
+    # and fail the step if the exit code is non-zero.
+    if [ "$exit_code" -ne 0 ]; then
+      echo "llmprobe gate failed with exit code $exit_code"
+      exit "$exit_code"
+    fi
 ```
 
 Проверьте каждый флаг против `llmprobe --help`, прежде чем включать шаг в
 workflow. Все права на описанное здесь поведение проверяемы командами:
 `llmprobe http://localhost:8080` возвращает `0` на чистом сервере, `1` при
 несовпадении ёмкости и `2` при ошибке (недоступный сервер, транспортный сбой).
+Отчёт в `llmprobe-report.json` содержит провенанс на каждом значении и
+предназначен для инспекции; полагайтесь не на разбор JSON, а на код возврата,
+который и является контрактом для CI.
 
 ## Error handling and security
 
