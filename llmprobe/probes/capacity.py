@@ -500,7 +500,7 @@ def _canary_preserved(reply: str) -> bool:
     discarded) means silent truncation.
     """
     normalized = reply.strip().upper()
-    return normalized.startswith(_CANARY[:-1])
+    return _CANARY in normalized
 
 
 async def _chat_calibration_passes(
