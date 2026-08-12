@@ -48,6 +48,24 @@ def test_models_lists_mock() -> None:
     assert {"id": "mock"} in resp.json()["data"]
 
 
+def test_slots_reports_per_slot_ctx_when_enabled() -> None:
+    server = make_mock_server(max_tokens=64, behavior="honest")
+    client = TestClient(server)
+    resp = client.get("/slots")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert isinstance(payload, list)
+    assert payload[0]["n_ctx"] == 64
+
+
+def test_slots_501_when_disabled() -> None:
+    server = make_mock_server(max_tokens=64, behavior="honest", slots_disabled=True)
+    client = TestClient(server)
+    resp = client.get("/slots")
+    assert resp.status_code == 501
+    assert "error" in resp.json()
+
+
 @pytest.mark.parametrize(
     "behavior, should_differ",
     [("honest", True), ("silent_truncation", False)],
