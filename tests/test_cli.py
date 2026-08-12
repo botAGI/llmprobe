@@ -106,6 +106,52 @@ def test_json_schema_prints_valid_json_and_exits_zero() -> None:
     assert "findings" in schema["properties"]
 
 
+def test_clean_result_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean probe with no mismatch or error findings => exit code 0.
+
+    An honest server probed with no ``--claimed-ctx`` produces no findings, so
+    the derived process exit code must be 0. This is the happy-path contract:
+    llmprobe only fails the process when it actually finds a mismatch or error.
+    """
+    server = make_mock_server(max_tokens=8192, behavior="honest")
+    result = _invoke(server, monkeypatch, [BASE_URL, "--probe", "--json"])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads(result.stdout)
+    assert report["findings"] == []
+
+
+def test_mismatch_result_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A MISMATCH finding (claimed ctx above the measured cliff) => exit code 1.
+
+    A 512-token silent-truncation server with a claimed 8192-ctx contract
+    provably cannot honour that context past 512 tokens. The measured cliff
+    below the claim is surfaced as a MISMATCH finding, and the derived exit
+    code must be 1 — signalling "the server is up but disagrees with you".
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--claimed-ctx", "8192", "--probe", "--json"]
+    )
+    assert result.exit_code == 1, result.output
+
+    report = json.loads(result.stdout)
+    severities = {f["severity"]["value"] for f in report["findings"]}
+    assert "mismatch" in severities
+
+
+def test_unavailable_server_exits_2() -> None:
+    """An unreachable/failed server => exit code 2 with no report.
+
+    When the origin cannot be reached at all, llmprobe treats it as an
+    unrecoverable error: it prints a diagnostic to stderr and exits 2, never
+    emitting a (possibly empty, misleading) report.
+    """
+    result = runner.invoke(cli.app, ["http://127.0.0.1:1", "--json"])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
 def test_safe_is_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--safe`` is the default: no inference load is sent unless ``--probe``.
 
