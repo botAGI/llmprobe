@@ -16,6 +16,7 @@ round and assigns the concrete backend when one exists.
 
 from __future__ import annotations
 
+import asyncio
 import httpx
 
 from llmprobe.models import (
@@ -32,6 +33,37 @@ GENERIC_DETECT_CONFIDENCE = 0.1
 #: Finding codes emitted when the sole generic endpoint cannot be read.
 MODELS_UNREACHABLE_CODE = "GENERIC_MODELS_UNREACHABLE"
 MODELS_HTTP_ERROR_CODE = "GENERIC_MODELS_HTTP_ERROR"
+
+#: Retry budget for transient network failures on the sole generic endpoint.
+#: A single blip (timeout, dropped connection) must not be mistaken for a hard
+#: boundary, so ``/v1/models`` is retried a few times with exponential backoff
+#: before the unreachable finding is surrendered.
+MODELS_NETWORK_ATTEMPTS = 3
+MODELS_NETWORK_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str
+) -> httpx.Response:
+    """GET ``url`` retrying transient network failures with backoff.
+
+    Only ``httpx.TransportError`` (connection refused, timeout, dropped
+    connection mid-flight) is retried — an HTTP status response is not a
+    network failure and is returned as-is on the first attempt. The retry
+    budget and backoff schedule honour :data:`MODELS_NETWORK_ATTEMPTS` and
+    :data:`MODELS_NETWORK_BACKOFF_SECONDS`. If every attempt fails, the last
+    exception is re-raised so the caller can surface it as a finding.
+    """
+    last_error: httpx.TransportError | None = None
+    for attempt in range(MODELS_NETWORK_ATTEMPTS):
+        try:
+            return await client.get(url, timeout=client.timeout)
+        except httpx.TransportError as exc:
+            last_error = exc
+            if attempt < MODELS_NETWORK_ATTEMPTS - 1:
+                await asyncio.sleep(MODELS_NETWORK_BACKOFF_SECONDS[attempt])
+    assert last_error is not None
+    raise last_error
 
 
 async def detect(client: httpx.AsyncClient, base_url: str) -> float:
@@ -63,9 +95,7 @@ async def read_config(
     model_id = ""
     findings: list[Finding] = []
     try:
-        resp = await client.get(
-            f"{base}/v1/models", timeout=client.timeout
-        )
+        resp = await _get_with_retry(client, f"{base}/v1/models")
     except httpx.HTTPError as exc:
         findings.append(
             Finding(

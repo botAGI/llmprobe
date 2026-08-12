@@ -169,3 +169,37 @@ async def test_connection_timeout_yields_error_finding() -> None:
     assert config.backend == Backend.GENERIC
     assert len(findings) == 1
     assert findings[0].code == "GENERIC_MODELS_UNREACHABLE"
+
+
+async def test_single_network_blip_is_retried_and_not_silent_truncation() -> None:
+    """A single transient network failure must be retried, not a boundary.
+
+    The generic backend retries ``/v1/models`` with exponential backoff on
+    network failures. A lone dropped connection must not surface as an ERROR
+    finding or be mistaken for a truncation boundary: the retry recovers and
+    the config is read honestly (model id ``read``, no findings).
+    """
+
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("connection lost", request=request)
+        return httpx.Response(
+            200, json={"object": "list", "data": [{"id": "generic-model"}]}
+        )
+
+    client = httpx.AsyncClient(
+        base_url=BASE_URL, transport=httpx.MockTransport(handler)
+    )
+    try:
+        config, findings = await read_effective_config(client, BASE_URL, None)
+    finally:
+        await client.aclose()
+
+    assert attempts > 1, "a single network blip should be retried"
+    assert findings == []
+    assert config.backend == Backend.GENERIC
+    assert config.model_id == "generic-model"
