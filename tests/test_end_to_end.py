@@ -13,6 +13,7 @@ other hermetic test does.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +111,40 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
     for row in data_rows:
         assert any(marker in row for marker in _PROVENANCE_MARKERS), (
             f"table data row lacks a provenance marker: {row!r}"
+        )
+
+
+def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that does not truncate is reported as accepted, no false alarms.
+
+    The fake server is started without truncation (honest behavior) and the
+    real CLI is driven against it. The probe verdict must be ``accepted`` and
+    the report must carry no findings: an honest server that accepts every
+    length through and beyond the probe ceiling must never raise a
+    silent-truncation or mismatch false alarm, and the process must exit 0.
+    """
+    server = make_mock_server(max_tokens=CLAIMED_CTX, behavior="honest")
+
+    result = _invoke(server, monkeypatch, [BASE_URL, "--probe", "--json"])
+
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.output)
+
+    # No false alarms: an honest server produces no findings at all.
+    assert payload["findings"] == []
+
+    # The probe verdict for every exercised endpoint is ``accepted`` — the
+    # server never truncated, never errored, and accepted every length it was
+    # asked about.
+    assert payload["capacity"], "expected the capacity probe to report"
+    for entry in payload["capacity"]:
+        verdict = entry["cliff_behavior"]["value"]
+        assert verdict == "accepted", (
+            f"honest server was flagged {verdict!r}, expected 'accepted' "
+            "(false alarm)"
         )
 
 
