@@ -94,7 +94,7 @@ def _coerce_endpoint(endpoint: Endpoint | str) -> Endpoint:
 
 
 def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
-    """Map an ``Endpoint`` selection onto a concrete probe path.
+    """Map an ``Endpoint`` selection onto its concrete probe path.
 
     ``AUTO`` is resolved against the detected ``backend`` using the per-backend
     default probe endpoint (see :data:`llmprobe.backends.DEFAULT_PROBE_ENDPOINTS`),
@@ -109,6 +109,39 @@ def _resolve_path(endpoint: Endpoint, backend: Backend) -> str:
     if endpoint is Endpoint.AUTO:
         return DEFAULT_PROBE_ENDPOINTS[backend]
     raise ValueError(f"unknown endpoint: {endpoint!r}")
+
+
+def _resolve_probe_paths(endpoint: Endpoint) -> list[str]:
+    """Resolve an ``Endpoint`` selection onto every concrete path to probe.
+
+    ``AUTO`` returns BOTH supported probe paths (``/v1/embeddings`` and
+    ``/v1/chat/completions``): the README promises ``--probe`` finds a real
+    cliff *per endpoint*, and the two endpoints fail at different limits, so a
+    probe that exercises only the per-backend default underreports. Explicit
+    ``CHAT`` / ``EMBEDDINGS`` choices restrict the probe to that single path.
+    """
+    if endpoint is Endpoint.CHAT:
+        return ["/v1/chat/completions"]
+    if endpoint is Endpoint.EMBEDDINGS:
+        return ["/v1/embeddings"]
+    if endpoint is Endpoint.AUTO:
+        return ["/v1/embeddings", "/v1/chat/completions"]
+    raise ValueError(f"unknown endpoint: {endpoint!r}")
+
+
+def _endpoint_for_path(path: str) -> Endpoint:
+    """Map a concrete probe path back to the ``Endpoint`` that exercises it.
+
+    The inverse of :func:`_resolve_path` for the paths returned by
+    :func:`_resolve_probe_paths`, used to hand each path to
+    ``probe_capacity``. An unrecognized path raises rather than silently
+    probing nothing.
+    """
+    if path == "/v1/embeddings":
+        return Endpoint.EMBEDDINGS
+    if path == "/v1/chat/completions":
+        return Endpoint.CHAT
+    raise ValueError(f"unknown probe path: {path!r}")
 
 
 def _capacity_findings(
@@ -214,21 +247,27 @@ async def probe(
         # that endpoint, so probe traffic is sent even without --probe. Only the
         # default AUTO selection honours the --safe/--probe suppression.
         effective_safe = safe and endpoint is Endpoint.AUTO
-        cap = await probe_capacity(
-            client,
-            base_url,
-            endpoint,
-            ceiling=DEFAULT_CEILING,
-            backend=config.backend,
-            model=config.model_id,
-            timeout=timeout,
-            safe=effective_safe,
-        )
-        if cap is not None:
-            capacity.append(cap)
-            # Compare --claimed-ctx against the measured max_accepted_tokens;
-            # a claimed_ctx mismatch is surfaced as a MISMATCH finding => exit 1.
-            findings.extend(_capacity_findings(claimed_ctx, cap))
+        if not effective_safe:
+            # AUTO probes EVERY supported path (see :func:`_resolve_probe_paths`):
+            # the README promises a real cliff per endpoint, so --probe must not
+            # stop at a single per-backend default.
+            for path in _resolve_probe_paths(endpoint):
+                cap = await probe_capacity(
+                    client,
+                    base_url,
+                    _endpoint_for_path(path),
+                    ceiling=DEFAULT_CEILING,
+                    backend=config.backend,
+                    model=config.model_id,
+                    timeout=timeout,
+                    safe=False,
+                )
+                if cap is not None:
+                    capacity.append(cap)
+                    # Compare --claimed-ctx against the measured
+                    # max_accepted_tokens; a claimed_ctx mismatch is surfaced as
+                    # a MISMATCH finding => exit 1.
+                    findings.extend(_capacity_findings(claimed_ctx, cap))
 
         report_url = redact_base_url(base_url)
         return ProbeReport(
