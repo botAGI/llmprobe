@@ -114,6 +114,57 @@ def test_end_to_end_silent_truncation_is_caught_and_has_a_fix(
         )
 
 
+def test_end_to_end_embedding_truncation_boundary_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fake embeddings server that truncates at max_tokens is caught exactly.
+
+    Against a locally raised fake embeddings server that genuinely discards
+    input past ``max_tokens`` (the tail-collapse two-prompt method), the real
+    CLI driven end to end must report a measured boundary of EXACTLY
+    ``max_tokens`` -- never off by one, never an approximate estimate. A
+    boundary one token away (``max_tokens-1`` or ``max_tokens+1``), a
+    non-exact token count, or a misclassified cliff all mean the probe got the
+    edge of the truncation wrong, and this test must turn red.
+    """
+    truncation_limit = 384
+    server = make_mock_server(max_tokens=truncation_limit, behavior="silent_truncation")
+
+    result = _invoke(
+        server,
+        monkeypatch,
+        [BASE_URL, "--endpoint", "embeddings", "--probe", "--json"],
+    )
+
+    assert result.exit_code == 1, result.output
+
+    payload = json.loads(result.output)
+
+    # The probe must have exercised exactly the embeddings endpoint only.
+    entries = payload["capacity"]
+    assert [entry["endpoint"] for entry in entries] == ["/v1/embeddings"]
+
+    # The measured boundary must be EXACTLY the truncation limit.
+    entry = entries[0]
+    assert entry["max_accepted_tokens"] == truncation_limit, (
+        f"boundary off: expected {truncation_limit}, got "
+        f"{entry['max_accepted_tokens']} (max_accepted_source="
+        f"{entry['max_accepted_source']})"
+    )
+    assert entry["max_accepted_source"] == "measured", (
+        "the boundary must be measured, not guessed"
+    )
+    assert entry["token_count_exact"] is True, (
+        "the boundary token count must be verified exactly via /tokenize"
+    )
+    assert entry["cliff_behavior"] == "silent_truncation", (
+        "the fake server silently drops the tail; the probe must say so"
+    )
+
+    # The lying server is surfaced as a finding with the exact measured edge.
+    assert "## Findings" in result.stdout or payload["findings"]
+
+
 def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
