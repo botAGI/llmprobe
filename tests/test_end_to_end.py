@@ -29,6 +29,8 @@ from tests.mocks.server import make_mock_server
 BASE_URL = "http://mock"
 MAX_TOKENS = 512
 CLAIMED_CTX = 8192
+TRUNCATION_CTX = 4096
+_TRUNCATION_TOLERANCE = 0.05
 
 _PROVENANCE_MARKERS = ("read", "measured", "inferred", "unknown")
 
