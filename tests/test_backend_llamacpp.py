@@ -13,6 +13,7 @@ import httpx
 
 from llmprobe.backends.llamacpp import detect, read_config
 from llmprobe.models import Backend, Provenance
+from llmprobe.probes.config import read_effective_config
 
 BASE_URL = "http://llamaserver"
 
@@ -174,3 +175,46 @@ async def test_read_config_handles_non_dict_default_settings() -> None:
         assert config.n_ctx_per_slot is None
         assert "n_ctx_per_slot" not in config.sources
         assert config.total_slots == 4
+
+
+async def test_integration_llamacpp_compatible_path_with_disabled_slots() -> None:
+    """Full llama.cpp-compatible flow against a mock with 501 on disabled slots.
+
+    Integration: this drives the real orchestration path
+    (``read_effective_config``: detect every backend concurrently, select the
+    most confident, then read its config) rather than calling the adapter's
+    ``detect``/``read_config`` in isolation. The mock answers in llama.cpp
+    shape — ``/props`` without ``n_batch``/``n_ubatch``, ``/slots`` present,
+    and ``501`` on disabled slots — and we assert every response is handled
+    correctly: the server is detected as llama.cpp, the config is read without
+    raising, and the fields llama.cpp never advertises stay ``None`` with
+    ``UNKNOWN`` provenance.
+    """
+    props = _load_props()
+    assert "n_ubatch" not in props
+    assert "n_batch" not in props
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/props":
+            return httpx.Response(200, json=props)
+        if path == "/slots":
+            return httpx.Response(501, json={"error": "slots disabled"})
+        return httpx.Response(404, json={})
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=BASE_URL
+    )
+    try:
+        config, findings = await read_effective_config(client, BASE_URL, None)
+    finally:
+        await client.aclose()
+
+    assert config.backend == Backend.LLAMACPP
+    assert config.total_slots == 4
+    assert config.n_ctx_per_slot == 8192
+    assert config.n_ubatch is None
+    assert config.sources["n_ubatch"] == Provenance.UNKNOWN
+    assert config.n_batch is None
+    assert config.sources["n_batch"] == Provenance.UNKNOWN
+    assert findings == []
