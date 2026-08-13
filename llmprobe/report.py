@@ -401,6 +401,18 @@ def to_markdown(
     )
     rows.extend(_capacity_rows(report))
 
+    total_requests_spent = sum(
+        cap.probe_requests_used for cap in report.capacity
+    )
+    rows.append(
+        f"| requests spent | unknown | {total_requests_spent} | "
+        f"{Provenance.MEASURED.value} | ok |"
+    )
+    rows.append(
+        f"| measured at | unknown | {ts} | "
+        f"{Provenance.MEASURED.value} | ok |"
+    )
+
     parts = ["\n".join(rows)]
     findings = _finding_lines(report)
     if findings:
