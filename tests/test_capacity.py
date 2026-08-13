@@ -294,7 +294,8 @@ async def test_chat_truncation_drops_canary_head_but_honest_preserves_it() -> No
     """
     n = 512 + 64  # above the cliff, so the head is dropped on truncation
 
-    prompt = " ".join(["llmprobeCanary"] + ["tok"] * (n - 1))
+    canary = "ZQX7"
+    prompt = " ".join([canary] + ["tok"] * (n - 1))
 
     async def chat(app, p: str) -> str:
         async with _client(app) as client:
@@ -316,10 +317,10 @@ async def test_chat_truncation_drops_canary_head_but_honest_preserves_it() -> No
 
     # Silent truncation drops the head -> the canary marker is gone from the
     # reply, which is the exact signal the canary check detects.
-    assert "llmprobeCanary" not in trunc_reply
+    assert canary not in trunc_reply.strip().upper()
     # Honest processing keeps the whole input -> the canary is preserved,
     # proving the check is non-vacuous (truncation truly destroys the marker).
-    assert "llmprobeCanary" in honest_reply
+    assert canary in honest_reply.strip().upper()
 
 
 @pytest.mark.asyncio
