@@ -345,6 +345,22 @@ def test_end_to_end_fake_server_subprocess_truncates_at_4096_within_five_percent
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _looks_offline(output: str) -> bool:
+    """True when pip's failure reads as "no index reachable" rather than a defect."""
+    lowered = output.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "temporary failure in name resolution",
+            "network is unreachable",
+            "no route to host",
+            "connection refused",
+            "retries exceeded",
+            "could not find a version",
+        )
+    )
+
+
 def _run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -356,16 +372,25 @@ def _run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess[str
 
 
 def test_pip_install_then_help_is_zero(tmp_path: Path) -> None:
-    """The wheel builds, installs into a clean venv, and the CLI answers help."""
+    """The wheel builds, installs into a clean venv, and the CLI answers help.
+
+    A genuinely clean room: no ``--system-site-packages`` and no ``--no-deps``.
+    Both shortcuts made this test pass on a host that happened to have httpx
+    installed globally while a real ``pip install llmprobe`` was broken — the
+    test measured the machine, not the package. Declaring every runtime import
+    in ``pyproject.toml`` is exactly what this proves, so the install must
+    resolve dependencies itself. That needs the network: when it is absent the
+    test skips with a reason rather than asserting something weaker.
+    """
     venv_dir = tmp_path / "venv"
-    _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)]).check_returncode()
+    _run([sys.executable, "-m", "venv", str(venv_dir)]).check_returncode()
 
     venv_python = venv_dir / "bin" / "python"
     venv_llmprobe = venv_dir / "bin" / "llmprobe"
 
-    install = _run(
-        [str(venv_python), "-m", "pip", "install", "--no-deps", str(_PROJECT_ROOT)]
-    )
+    install = _run([str(venv_python), "-m", "pip", "install", str(_PROJECT_ROOT)])
+    if install.returncode != 0 and _looks_offline(install.stdout + install.stderr):
+        pytest.skip("no package index reachable; cannot verify a clean-room install")
     assert install.returncode == 0, install.stdout + install.stderr
     assert venv_llmprobe.exists(), "llmprobe console script was not installed"
 

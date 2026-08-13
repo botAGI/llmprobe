@@ -31,6 +31,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 import llmprobe.cli as cli
@@ -140,7 +141,7 @@ def _capacity_max_tokens(payload: dict) -> tuple[int, str]:
     return tokens["value"], tokens["provenance"]
 
 
-def test_honest_deterministic_server_never_false_alarms() -> None:
+def test_honest_deterministic_server_never_false_alarms(monkeypatch: pytest.MonkeyPatch) -> None:
     """An honest server is reported as a high boundary, never a tiny capacity.
 
     Driving the real CLI against a server that accepts any prompt length must
@@ -150,7 +151,10 @@ def test_honest_deterministic_server_never_false_alarms() -> None:
     false alarm this test guards against.
     """
     server = _honest_deterministic_server()
-    cli._make_client = _asgi_client_factory(server)
+    # monkeypatch, not a bare assignment: a bare `cli._make_client = ...` is never
+    # undone and leaks the stub into every later test in the session, so an
+    # unreachable-server test silently connects to THIS server and exits 0.
+    monkeypatch.setattr(cli, "_make_client", _asgi_client_factory(server))
 
     result = runner.invoke(
         cli.app,
@@ -185,7 +189,7 @@ def test_honest_deterministic_server_never_false_alarms() -> None:
     assert endpoint == "/v1/chat/completions"
 
 
-def test_honest_deterministic_server_exceeds_small_bound() -> None:
+def test_honest_deterministic_server_exceeds_small_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     """The honest boundary must clear the ceiling that triggers the false alarm.
 
     Guards the specific regression: if the old reply-comparison logic is
@@ -195,7 +199,10 @@ def test_honest_deterministic_server_exceeds_small_bound() -> None:
     below the ceiling the false alarm commonly reported and far above LO.
     """
     server = _honest_deterministic_server()
-    cli._make_client = _asgi_client_factory(server)
+    # monkeypatch, not a bare assignment: a bare `cli._make_client = ...` is never
+    # undone and leaks the stub into every later test in the session, so an
+    # unreachable-server test silently connects to THIS server and exits 0.
+    monkeypatch.setattr(cli, "_make_client", _asgi_client_factory(server))
 
     result = runner.invoke(
         cli.app,

@@ -38,6 +38,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 import llmprobe.cli as cli
@@ -83,7 +84,9 @@ def _asgi_client_factory(app: Any):
     return make
 
 
-def test_truncated_canary_echo_is_never_silent_truncation() -> None:
+def test_truncated_canary_echo_is_never_silent_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A server whose marker does not survive verbatim must NOT false-alarm.
 
     Driving the real CLI against a fully honest server that echoes only a
@@ -94,7 +97,10 @@ def test_truncated_canary_echo_is_never_silent_truncation() -> None:
     ``silent_truncation`` and the report shows ``max_accepted_tokens == 15``.
     """
     server = _truncated_marker_honest_server()
-    cli._make_client = _asgi_client_factory(server)
+    # monkeypatch, not a bare assignment: a bare `cli._make_client = ...` is never
+    # undone and leaks the stub into every later test in the session, so an
+    # unreachable-server test silently connects to THIS server and exits 0.
+    monkeypatch.setattr(cli, "_make_client", _asgi_client_factory(server))
 
     result = runner.invoke(
         cli.app,
