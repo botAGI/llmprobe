@@ -26,7 +26,9 @@ import datetime
 import email.utils
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -42,6 +44,25 @@ from llmprobe.models import (
 from llmprobe.tokens import _tokenize
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProbeTrace:
+    """A single capacity probe trace reported by ``--verbose``.
+
+    Carries the classification of one probed input length: ``length`` is the
+    token count probed, ``verdict`` the classification returned by the
+    endpoint, and ``elapsed`` the wall-clock time for that probe (seconds).
+    ``endpoint`` names the probed path so the user can tell which endpoint a
+    trace belongs to. Emitted ONLY to stderr by the CLI when ``--verbose`` is
+    set; it is never part of the report, so ``--json`` stays machine-readable.
+    """
+
+    endpoint: str
+    length: int
+    verdict: str
+    elapsed: float
+
 
 LO = 16
 DEFAULT_CEILING = 32768
@@ -857,6 +878,7 @@ async def _binary_search_chat(
     requests: list[int],
     timeout: httpx.Timeout,
     max_requests: int | None = None,
+    on_probe: Callable[[ProbeTrace], None] | None = None,
 ) -> CapacityResult:
     """Binary-search the ``/v1/chat/completions`` cliff.
 
@@ -864,9 +886,20 @@ async def _binary_search_chat(
     probes each length via the canary-head method described there.
     """
     async def classify(n: int) -> str:
-        return await _chat_classify(
+        start = time.monotonic()
+        verdict = await _chat_classify(
             client, base_url, endpoint, n, model, requests, timeout
         )
+        if on_probe is not None:
+            on_probe(
+                ProbeTrace(
+                    endpoint=endpoint,
+                    length=n,
+                    verdict=verdict,
+                    elapsed=time.monotonic() - start,
+                )
+            )
+        return verdict
 
     return await _binary_search(
         classify, endpoint, ceiling, exact, requests, max_requests
@@ -883,6 +916,7 @@ async def probe_capacity(
     timeout: float | None = None,
     safe: bool = False,
     max_requests: int | None = None,
+    on_probe: Callable[[ProbeTrace], None] | None = None,
 ) -> CapacityResult | None:
     """Determine the largest accepted input length and how the server fails.
 
@@ -907,6 +941,11 @@ async def probe_capacity(
     adversarial or pathological server cannot drive an unbounded search); when
     the budget is exhausted before a verdict the search aborts and reports
     UNKNOWN rather than guessing a boundary.
+
+    ``on_probe``, when given, is invoked after each probed input length is
+    classified with a :class:`ProbeTrace` carrying the length, verdict, and
+    elapsed response time. This powers the CLI's ``--verbose`` tracing; it is
+    only a side-channel (to stderr) and never influences the result.
     """
     if safe:
         return None
@@ -939,6 +978,7 @@ async def probe_capacity(
             client, base_url, path, model, per_request
         ):
             return _calibration_failed_result(path, requests[0])
+
         return await _binary_search_chat(
             client,
             base_url,
@@ -949,11 +989,23 @@ async def probe_capacity(
             requests,
             per_request,
             max_requests,
+            on_probe,
         )
 
     async def classify(n: int) -> str:
-        return await _embed_classify(
+        start = time.monotonic()
+        verdict = await _embed_classify(
             client, base_url, path, n, model, requests, per_request
         )
+        if on_probe is not None:
+            on_probe(
+                ProbeTrace(
+                    endpoint=path,
+                    length=n,
+                    verdict=verdict,
+                    elapsed=time.monotonic() - start,
+                )
+            )
+        return verdict
 
     return await _binary_search(classify, path, ceiling, exact, requests, max_requests)

@@ -88,6 +88,7 @@ def test_cli_options_are_declared() -> None:
     assert "--timeout" in opts
     assert "--json-schema" in opts
     assert "--max-requests" in opts
+    assert "--verbose" in opts
 
 
 def test_json_schema_prints_valid_json_and_exits_zero() -> None:
@@ -208,6 +209,46 @@ def test_honest_mock_probes_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
 
     report = json.loads(result.stdout)
     assert report["findings"] == []
+
+
+def test_verbose_traces_each_probe_to_stderr_without_touching_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--verbose`` logs each probe to stderr; stdout stays machine-readable JSON.
+
+    The traces must carry the probed input length, the classification verdict,
+    and an elapsed response time, and must go ONLY to stderr so the ``--json``
+    report on stdout remains valid JSON (no trailing probe lines mixed in).
+    """
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    result = _invoke(
+        server,
+        monkeypatch,
+        [BASE_URL, "--probe", "--verbose", "--json"],
+    )
+    assert result.exit_code == 0
+
+    # stdout must still be pure JSON — verbose output never pollutes the report.
+    report = json.loads(result.stdout)
+    assert report["capacity"] != []
+    assert report["capacity"][0]["cliff_behavior"]["value"] == (
+        CliffBehavior.SILENT_TRUNCATION.value
+    )
+
+    # stderr must carry per-probe trace lines with length, verdict, and elapsed.
+    assert result.stderr, "verbose mode produced no probe trace output on stderr"
+    assert "probe:" in result.stderr
+    assert "length=" in result.stderr
+    assert "verdict=" in result.stderr
+    assert "elapsed=" in result.stderr
+
+
+def test_default_emits_no_verbose_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ``--verbose`` no probe trace lines are written to stderr."""
+    server = make_mock_server(max_tokens=512, behavior="silent_truncation")
+    result = _invoke(server, monkeypatch, [BASE_URL, "--probe", "--json"])
+    assert result.exit_code == 0
+    assert "probe:" not in result.stderr
 
 
 def test_probe_ceiling_uses_claimed_context_reference(

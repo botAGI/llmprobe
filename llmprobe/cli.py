@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 from typing import Annotated
 
 import httpx
@@ -21,7 +22,7 @@ import typer
 from rich.console import Console
 
 from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
-from llmprobe.probes.capacity import DEFAULT_CEILING, probe_capacity
+from llmprobe.probes.capacity import DEFAULT_CEILING, ProbeTrace, probe_capacity
 from llmprobe.probes.config import read_effective_config
 from llmprobe.probes.slots import check_slots
 from llmprobe.report import to_json, to_json_schema, to_markdown
@@ -47,9 +48,7 @@ app = typer.Typer(
 
 _console = Console()
 
-_API_KEY_ENV = "LLMPROBE_API_KEY"
-
-#: Default per-request timeout in seconds (applied to every HTTP request).
+_API_KEY_ENV = "LLMPROBE_API_KEY"#: Default per-request timeout in seconds (applied to every HTTP request).
 #: Generous by design: probing long inputs can exceed a short timeout, and the
 #: capacity probe scales this base up proportionally to the prompt's token
 #: count.
@@ -64,6 +63,20 @@ def redact_base_url(base_url: str) -> str:
     removed for display while the connection URL is left untouched.
     """
     return redact_userinfo(base_url)
+
+
+def _emit_probe_trace(trace: ProbeTrace) -> None:
+    """Write one verbose probe trace line to stderr.
+
+    ``--verbose`` reports each probe as ``length=<n> verdict=<v>
+    elapsed=<t>s endpoint=<path>``. The trace goes ONLY to stderr so the
+    standard report — including ``--json`` — stays machine-readable on stdout.
+    """
+    typer.echo(
+        f"probe: length={trace.length} verdict={trace.verdict} "
+        f"elapsed={trace.elapsed:.3f}s endpoint={trace.endpoint}",
+        err=True,
+    )
 
 
 def _coerce_endpoint(endpoint: Endpoint | str) -> Endpoint:
@@ -222,6 +235,7 @@ async def probe(
     max_requests: int | None = None,
     *,
     chat: bool = False,
+    on_probe: Callable[[ProbeTrace], None] | None = None,
 ) -> ProbeReport:
     """Run the configured read and optional capacity probe, then assemble a report.
 
@@ -233,7 +247,9 @@ async def probe(
     endpoint (``Endpoint.CHAT``); when given, it takes precedence. ``max_requests``,
     when given, caps the total probe HTTP requests so an adversarial or
     pathological server cannot drive an unbounded search; an exhausted budget
-    reports capacity UNKNOWN instead of a guessed boundary.
+    reports capacity UNKNOWN instead of a guessed boundary. ``on_probe``, when
+    given, is forwarded to each capacity probe as a per-probe tracing callback
+    used by ``--verbose`` (writes to stderr; never alters the report).
     """
     endpoint = Endpoint.CHAT if chat else _coerce_endpoint(endpoint)
     async with _make_client(base_url, api_key, timeout) as client:
@@ -266,6 +282,7 @@ async def probe(
                     timeout=timeout,
                     safe=False,
                     max_requests=max_requests,
+                    on_probe=on_probe,
                 )
                 if cap is not None:
                     capacity.append(cap)
@@ -372,6 +389,16 @@ def main(
             ),
         ),
     ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help=(
+                "Print each probe (input length, verdict, response time) to "
+                "stderr. The report on stdout, including --json, is unaffected."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
     if json_schema:
@@ -391,6 +418,7 @@ def main(
                 timeout=timeout,
                 api_key=api_key,
                 max_requests=max_requests,
+                on_probe=_emit_probe_trace if verbose else None,
             )
         )
     except httpx.HTTPError as exc:
