@@ -364,6 +364,36 @@ def test_endpoint_chat_resolves_to_chat_completions() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("endpoint_name", "expected_path"),
+    [
+        ("chat", "/v1/chat/completions"),
+        ("embeddings", "/v1/embeddings"),
+    ],
+)
+def test_explicit_endpoint_without_probe_requests_inference(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint_name: str,
+    expected_path: str,
+) -> None:
+    """Explicit ``--endpoint`` triggers probing even without ``--probe``.
+
+    Selecting ``--endpoint chat`` (or ``embeddings``) is a request for
+    inference on that endpoint, so ``probe_capacity`` runs for the matching
+    path despite the ``--safe`` default. Only the default ``auto`` selection
+    honours ``--safe`` suppression (see ``test_safe_is_the_default``).
+    """
+    server = make_mock_server(max_tokens=512, behavior="honest")
+    result = _invoke(
+        server, monkeypatch, [BASE_URL, "--endpoint", endpoint_name, "--json"]
+    )
+    assert result.exit_code == 0, result.output
+
+    report = json.loads(result.stdout)
+    assert report["capacity"] != []
+    assert report["capacity"][0]["endpoint"]["value"] == expected_path
+
+
 def test_explicit_endpoint_sends_probe_traffic_without_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
