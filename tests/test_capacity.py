@@ -324,6 +324,36 @@ async def test_chat_truncation_drops_canary_head_but_honest_preserves_it() -> No
 
 
 @pytest.mark.asyncio
+async def test_truncated_canary_is_unknown_not_silent_truncation() -> None:
+    """A server whose marker does not survive verbatim must NOT be a false alarm.
+
+    The chat probe detects silent truncation by asking the model to echo a canary
+    (``ZQX7``) from the head of the prompt. Some fully-honest servers accept every
+    input yet return the marker in a truncated form (``'ZQ'`` instead of the full
+    ``'ZQX7'``) because the marker is not preserved verbatim — they do NOT drop the
+    head. Without a guard, the canary check would see ``'ZQ'`` (which does not
+    contain the full ``'ZQX7'``) and fabricate a ``silent_truncation`` verdict that
+    the server does not exhibit.
+
+    The probe must therefore CALIBRATE the marker-echo mechanism first: even the
+    short calibration input cannot echo the full canary, so the tool reports UNKNOWN
+    (no measured boundary) rather than a confident ``silent_truncation``. If the
+    calibration guard is reverted the probe would walk the search and report
+    ``silent_truncation`` for a server that never truncates — this test must turn red.
+    """
+    server = make_mock_server(
+        max_tokens=512, behavior="honest", chat_marker_reply="ZQ"
+    )
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, CHAT_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
+        )
+    assert result is not None
+    assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_source == Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_silent_truncation_two_prompts_different_final_token() -> None:
     """The README promise: two prompts differing only in their final token
     expose silent truncation.
