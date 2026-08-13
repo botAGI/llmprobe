@@ -1,6 +1,8 @@
 # llmprobe
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://pypi.org/project/llmprobe/)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/botAGI/llmprobe/releases)
+
+[Русская версия](README.ru.md)
 
 **Point it at a running local inference server. It tells you what that server can actually do — measured, not claimed.**
 
@@ -16,6 +18,11 @@ everything above 512 tokens either errors or gets truncated. And `n_ubatch` is n
 exposed over HTTP at all: it is absent from `/props`. You cannot read it. You can only
 measure it.
 
+Where the server does tell you, llmprobe reads it rather than guessing: on
+`/completion` llama.cpp returns `truncated` and `tokens_evaluated`, and those
+are used directly. The blind spot this tool exists for is the embeddings path,
+where no such field exists and the batch ceiling is invisible over HTTP.
+
 ## What it checks
 
 - **Real maximum input** — binary search to the actual cliff, per endpoint
@@ -27,15 +34,118 @@ measure it.
 - **Provenance on every value** — `read`, `measured`, `inferred`, or `unknown`.
   A confident guess is worse than an honest "unknown".
 
+## Examples of output
+
+Both reports below are verbatim output against two real `llama.cpp` b9049
+servers, started from the same image with the same model and differing in
+exactly one flag. `scripts/live_control.sh` reproduces the pair, and
+`tests/test_live_llamacpp.py` asserts both outcomes.
+
+**A server capped below the context it advertises.** Started with
+`--embeddings --ctx-size 8192` and nothing else, so `n_ubatch` keeps its
+default of 512. `/props` reports 8192 tokens per slot and says nothing about
+`n_ubatch`; the server hard-errors past 510 tokens (510 of content plus BOS and
+EOS fills the 512 batch). No `--claimed-ctx` was passed — the shortfall is
+measured against the server's own reported context:
+
+```text
+# Capability Report — http://127.0.0.1:18081
+
+llmprobe 0.1.0 · measured 2026-08-13T15:23:17Z (UTC)
+
+| Property | Claimed | Measured | Source | Verdict |
+| --- | --- | --- | --- | --- |
+| backend | llamacpp | llamacpp | read | ok |
+| model | unknown | unknown | unknown | unknown |
+| context (total) | unknown | unknown | unknown | unknown |
+| context (per slot) | 8192 | 8192 | read | ok |
+| slots | 4 | 4 | read | ok |
+| max input tokens (/v1/embeddings) | unknown | 510 | measured | ok |
+| token count (/v1/embeddings) | unknown | estimate | measured | ok |
+| cliff behaviour (/v1/embeddings) | unknown | hard_error | measured | error |
+| probe requests used (/v1/embeddings) | unknown | 34 | measured | ok |
+| requests spent | unknown | 34 | measured | ok |
+| measured at | unknown | 2026-08-13T15:23:17Z | measured | ok |
+
+## Findings
+
+- **[mismatch] UBATCH_CEILING**: advertised=8192 (read) vs measured=510 (measured) — requests past 510 tokens are hard\_error
+
+## Fix
+
+--batch-size 8192 --ubatch-size 8192
+```
+
+Exit code `1`.
+
+**The same image, the same model, with `-b 8192 -ub 8192`.** Capacity now
+matches the configured context, and the two-token gap is BOS and EOS:
+
+```text
+# Capability Report — http://127.0.0.1:18082
+
+llmprobe 0.1.0 · measured 2026-08-13T15:26:43Z (UTC)
+
+| Property | Claimed | Measured | Source | Verdict |
+| --- | --- | --- | --- | --- |
+| backend | llamacpp | llamacpp | read | ok |
+| model | unknown | unknown | unknown | unknown |
+| context (total) | unknown | unknown | unknown | unknown |
+| context (per slot) | 8192 | 8192 | read | ok |
+| slots | 4 | 4 | read | ok |
+| max input tokens (/v1/embeddings) | unknown | 8190 | measured | ok |
+| token count (/v1/embeddings) | unknown | estimate | measured | ok |
+| cliff behaviour (/v1/embeddings) | unknown | hard_error | measured | error |
+| probe requests used (/v1/embeddings) | unknown | 34 | measured | ok |
+| requests spent | unknown | 34 | measured | ok |
+| measured at | unknown | 2026-08-13T15:26:43Z | measured | ok |
+```
+
+Exit code `0`, no findings. The pair is what makes the detector falsifiable: a
+tool that flagged everything would pass the first server and fail the second.
+
+## What has been verified live, and what has not
+
+At the brand of "measured, not claimed", this table is mandatory rather than
+modest.
+
+| Backend | Config read | Capacity probe | How |
+| --- | --- | --- | --- |
+| llama.cpp | live | **live, both directions** | b9049, real GGUF, the pair above |
+| vLLM | live | live | a running server, 1M-context model |
+| Ollama | mock only | mock only | recorded responses, no live run yet |
+| generic OpenAI-compatible | mock only | mock only | recorded responses |
+
+Silent truncation is the dangerous case, and llama.cpp does not exhibit it on
+embeddings — it hard-errors, which is the honest failure. The detector's
+silent-truncation path is therefore exercised against mocks and against
+servers that truncate; treat that path as less proven than the hard-error one.
+
+## Install
+
+Not on PyPI yet, so install it from the repository:
+
+```bash
+uvx --from git+https://github.com/botAGI/llmprobe llmprobe http://localhost:8080
+```
+
+or, to get the `llmprobe` command on your PATH:
+
+```bash
+pip install git+https://github.com/botAGI/llmprobe
+```
+
+Every example below uses the installed `llmprobe` command.
+
 ## Usage
 
 ```bash
-uvx llmprobe http://localhost:8080            # safe: read config only
-uvx llmprobe http://localhost:8080 --probe    # send traffic, find the real cliff
-uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192   # exit 1 on mismatch
-uvx llmprobe http://localhost:8080 --json      # emit machine-readable JSON
-uvx llmprobe http://localhost:8080 --endpoint chat   # probe the chat endpoint (default auto)
-uvx llmprobe http://localhost:8080 --timeout 30      # per-request timeout in seconds
+llmprobe http://localhost:8080            # safe: read config only
+llmprobe http://localhost:8080 --probe    # send traffic, find the real cliff
+llmprobe http://localhost:8080 --probe --claimed-ctx 8192   # exit 1 on mismatch
+llmprobe http://localhost:8080 --json      # emit machine-readable JSON
+llmprobe http://localhost:8080 --endpoint chat   # probe the chat endpoint (default auto)
+llmprobe http://localhost:8080 --timeout 30      # per-request timeout in seconds
 ```
 
 Exit codes: `0` clean, `1` advertised capacity does not match measured, `2` error.
@@ -56,29 +166,23 @@ unresponsive server fails fast instead of hanging the process.
 ## Quick start
 
 Point it at a running server and read what the server actually exposes. These
-three commands take you from install to an automated capacity check. Each
+two commands take you from a first look to an automated capacity check. Each
 flag below is a real CLI option — verify against `llmprobe --help`.
 
-1. **Install.**
-
-   ```bash
-   uvx llmprobe
-   ```
-
-2. **Safe run** — read configuration only, send no inference traffic, and get
+1. **Safe run** — read configuration only, send no inference traffic, and get
    a report of what the server advertises and what llmprobe can verify as
    `read`:
 
    ```bash
-   uvx llmprobe http://localhost:8080
+   llmprobe http://localhost:8080
    ```
 
-3. **Production run that aborts on a mismatch** — send probe traffic to find
+2. **Production run that aborts on a mismatch** — send probe traffic to find
    the real capacity cliff, and exit `1` (failing a CI gate) if the measured
    ceiling is below the context you claimed:
 
    ```bash
-   uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
+   llmprobe http://localhost:8080 --probe --claimed-ctx 8192
    ```
 
    Exit code `1` means "advertised capacity does not match measured"; `0` is
@@ -107,7 +211,7 @@ truncates prompts.
 ```yaml
 - name: Probe inference server capacity (CI gate)
   run: |
-    uvx llmprobe http://localhost:8080 --probe --claimed-ctx 8192
+    llmprobe http://localhost:8080 --probe --claimed-ctx 8192
   # llmprobe exits 0 when measured capacity matches the claim and
   # 1 when it does not. Any non-zero exit fails this step.
 ```
@@ -126,44 +230,6 @@ A few notes on making the gate honest and non-flaky:
 - **Do not rely on `--json` output parsing for gating.** The JSON report is
   for humans and tooling to inspect; the exit code is the single stable, CI-
   relevant contract.
-
-## Использование как гейта в CI
-
-Чтобы использовать llmprobe как шлюз в пайплайне CI, достаточно запустить его
-в шаге workflow и проверить код возврата. llmprobe завершает работу с `0`,
-когда измеренная ёмкость совпадает с заявленной, и с `1` при несовпадении.
-Любой ненулевой код возврата остановит шаг и, как следствие, весь job.
-
-Ниже — пример шага GitHub Actions workflow, который запускает llmprobe против
-локального inference-сервера с `--json` и проверяет код возврата. `--json`
-выдаёт машинночитаемый отчёт на stdout (его можно сохранить как артефакт или
-разобрать в следующем шаге), а решение о том, пройден ли шлюз, принимается по
-коду возврата — это единственный стабильный для CI контракт. Передача
-`--claimed-ctx` делает проверку осмысленной: без неё измеренная ёмкость
-ни с чем не сравнивается, и шлюз не сможет обнаружить несоответствие.
-
-```yaml
-- name: Check inference server capacity (CI gate)
-  run: |
-    uvx llmprobe http://localhost:8080 --json --probe --claimed-ctx 8192 \
-      > llmprobe-report.json
-    exit_code=$?
-    # llmprobe exits 0 when measured capacity matches the claim,
-    # 1 when it does not, and 2 on error. Preserve the report artifact
-    # and fail the step if the exit code is non-zero.
-    if [ "$exit_code" -ne 0 ]; then
-      echo "llmprobe gate failed with exit code $exit_code"
-      exit "$exit_code"
-    fi
-```
-
-Проверьте каждый флаг против `llmprobe --help`, прежде чем включать шаг в
-workflow. Все права на описанное здесь поведение проверяемы командами:
-`llmprobe http://localhost:8080` возвращает `0` на чистом сервере, `1` при
-несовпадении ёмкости и `2` при ошибке (недоступный сервер, транспортный сбой).
-Отчёт в `llmprobe-report.json` содержит провенанс на каждом значении и
-предназначен для инспекции; полагайтесь не на разбор JSON, а на код возврата,
-который и является контрактом для CI.
 
 ## Error handling and security
 
@@ -203,27 +269,6 @@ this tool: a length confirmed by the server's own tokenizer is a fact, a
 length built from guesswork filler is a model, and a report must always let
 you tell the two apart.
 
-## Known limitations
-
-Be clear-eyed about what a run can and cannot tell you:
-
-- **Generic OpenAI-compatible servers** advertise no reliable capacity over
-  HTTP, so llmprobe reports every capacity field as `unknown` and only a model
-  id with provenance `read`. That is not a bug — it is the honest answer the
-  protocol permits. Run `--probe` if you need a measured number.
-- **llama.cpp does not expose `n_batch` or `n_ubatch` over HTTP**, so both are
-  reported as `unknown` (provenance `unknown`). They cannot be read; they can
-  only be probed.
-- **Backend detection is heuristic.** It keys on server-specific response
-  shapes (e.g. llama.cpp's `/props` `build_info`). A server that imitates one
-  of those shapes may be classified as that backend.
-- **The capacity probe measures input length, not throughput.** It reports the
-  largest *input* a server genuinely accepts and how it fails beyond that —
-  not latency, tokens/sec, or concurrency.
-- **Model-facing requests in the probe are mocks.** The probe posts requests
-  for a model id like `embed-mock` / `mock`; a server that validates the model
-  id strictly may reject them and be reported as a hard error.
-
 ## Troubleshooting live runs
 
 - **Exit code `2` with an "unreachable or failed server" message**: llmprobe
@@ -250,58 +295,7 @@ every value) over eyeballing the markdown card.
 
 llama.cpp (`llama-server`), vLLM, Ollama, and a generic OpenAI-compatible fallback.
 
-## Examples of output
-
-Below are examples of real tool output. Every report consists of a `Capability
-Report` table, where for each property the claimed (Claimed) and measured
-(Measured) values, the value source (Source), and the verdict (Verdict) are given.
-
-Example report for a server with a correct configuration (`tests/golden/clean.md`):
-
-```text
-# Capability Report — http://localhost:8080
-
-| Property | Claimed | Measured | Source | Verdict |
-| --- | --- | --- | --- | --- |
-| backend | llamacpp | llamacpp | read | ok |
-| model | mock/llama-3.1-8b | mock/llama-3.1-8b | read | ok |
-| context (total) | 8192 | 8192 | read | ok |
-| context (per slot) | 2048 | 2048 | read | ok |
-| slots | 4 | 4 | read | ok |
-| max input tokens (/completion) | unknown | 8192 | measured | ok |
-| cliff behaviour (/completion) | unknown | accepted | measured | ok |
-```
-
-Example report that reveals a problem — the measured ceiling is below the
-claimed one, and excess tokens are silently discarded (`tests/golden/silent-truncation.md`):
-
-```text
-# Capability Report — http://localhost:8080
-
-| Property | Claimed | Measured | Source | Verdict |
-| --- | --- | --- | --- | --- |
-| backend | llamacpp | llamacpp | read | ok |
-| model | mock/llama-3.1-8b | mock/llama-3.1-8b | read | ok |
-| context (total) | 8192 | 8192 | read | ok |
-| context (per slot) | 2048 | 2048 | read | ok |
-| slots | 4 | 4 | read | ok |
-| max input tokens (/completion) | unknown | 7168 | measured | ok |
-| cliff behaviour (/completion) | unknown | silent_truncation | measured | truncated |
-
-## Findings
-
-- **[mismatch] UBATCH_CEILING**: advertised=8192 vs measured=7168 — requests past 7168 tokens are silently truncated
-
-## Fix
-
---batch-size 8192 --ubatch-size 8192
-```
-
-In the second example, the distinction between the `ok` and `truncated`
-verdicts is important: it is `truncated` that means the server accepted the
-request but dropped the tail of the context without reporting an error.
-
-## Tool limitations
+## Limitations
 
 The tool only measures the server's capacity and configuration. It does **not**
 and cannot do the following:
@@ -323,53 +317,33 @@ and cannot do the following:
 "Everything `ok`" should not be read as "the server works well". It means only
 this: the claimed capacity was confirmed by measurement.
 
-## Как это проверялось
+Be clear-eyed about what a run can and cannot tell you:
 
-Это раздел честно, без преувеличений, излагает, что было проверено «вживую»
-(против реального сервера), что покрыто только моками или записанными
-фикстурами, и сколько всего тестов. Тестовая инфраструктура герметична: ни
-один тест не требует сети или работающего inference-сервера. Проверяемо
-командой:
-
-```bash
-python -m pytest --co -q    # покажет 218 тестов
-python -m pytest -q         # прогонит весь набор
-```
-
-**Всего тестов:** на момент написания раздела набор герметичных тестов
-считает **218** тестов (`python -m pytest --co -q`). Ни один из них не ходит
-в реальную сеть.
-
-**Проверено вживую (против реального сервера):**
-- **vLLM.** Адаптер vLLM — единственный, для которого есть «живой» след:
-  записанный дамп реального ответа сервера
-  (`tests/fixtures/vllm_metrics_live.txt`, 350 строк настоящих метрик vLLM).
-  Тесты гоняют этот дамп через `httpx.MockTransport`, но данные внутри —
-  не выдуманные, а снятые с работающего vLLM-инстанса.
-
-**Покрыто только моками и записанными фикстурами (вживую не гонялось):**
-- **llama.cpp (`llamacpp`).** Проверено только через `httpx.MockTransport` и
-  записанную фикстуру `tests/fixtures/llamacpp_props.json`. Фактическое
-  поведение против реального `llama-server` может отличаться от заявленного.
-- **Ollama.** Так же: только моки и записанные фикстуры
-  (`tests/fixtures/ollama_*.json`), реальный сервер Ollama не участвовал.
-- **Обобщённый OpenAI-совместимый бэкенд.** Проверен только по записанным
-  формам ответов и мокам.
-- **Интеграционный fake-сервер** (`tests/fake_server.py`) — это не реальный
-  inference-сервер, а тестовый HTTP-сервер-подпроцесс, который намеренно
-  усекает вход на заданной длине (режимы `refuse`/`silent`), чтобы проверить,
-  что зонд находит границу усечения сквозь реальный HTTP-стек. Его можно
-  запустить вручную (`python -m tests.fake_server --port 8765 --truncate-len 8`),
-  но он всё равно эмулирует поведение, а не является продакшн-сервером.
-
-Это значит: единственным адаптером, поведение которого проверено против
-настоящего работающего сервера, остаётся vLLM. Всё, что README и CLI обещают
-про llama.cpp и Ollama, подтверждается пока только моками и записанными
-фикстурами. Не выдавай это за большее, чем есть.
+- **Generic OpenAI-compatible servers** advertise no reliable capacity over
+  HTTP, so llmprobe reports every capacity field as `unknown` and only a model
+  id with provenance `read`. That is not a bug — it is the honest answer the
+  protocol permits. Run `--probe` if you need a measured number.
+- **llama.cpp does not expose `n_batch` or `n_ubatch` over HTTP**, so both are
+  reported as `unknown` (provenance `unknown`). They cannot be read; they can
+  only be probed.
+- **Backend detection is heuristic.** It keys on server-specific response
+  shapes (e.g. llama.cpp's `/props` `build_info`). A server that imitates one
+  of those shapes may be classified as that backend.
+- **The capacity probe measures input length, not throughput.** It reports the
+  largest *input* a server genuinely accepts and how it fails beyond that —
+  not latency, tokens/sec, or concurrency.
+- **The probe sends the model id it read from the server.** When the server
+  reports no model id, the literal `unknown` goes out instead, and a server
+  that validates model ids strictly will reject that and be reported as a hard
+  error. Pinning a wrong id here once produced a confident "maximum input: 15
+  tokens" from what was really an HTTP 404 on every request.
 
 ## Status
 
-Early. v0 covers config read, capacity cliff, and per-slot context.
+Early, and honest about it. Config read, capacity cliff and per-slot context
+work; the llama.cpp path is verified against real servers in both directions,
+vLLM against a running server, and Ollama only against recorded responses. Not
+published to PyPI yet — install from the repository as shown above.
 
 ## License
 
