@@ -92,31 +92,53 @@ _CALIBRATION_TOKENS = 64
 _TIMEOUT_SCALE_BASELINE = 512
 _MAX_TIMEOUT_ALLOWANCE = 180.0
 
-# Retry budget for a rate-limited (HTTP 429) probe request. A 429 with a
-# ``Retry-After`` header is a transient "slow down" signal, not a length
-# verdict: the probe must back off per the server's instruction and retry
-# before classifying the length as ``hard_error``. ``_RETRY_429_ATTEMPTS``
-# bounds how many times we retry; the retry honours the server's requested
-# ``Retry-After`` delay, capped at ``_RETRY_429_MAX_SLEEP_SECONDS`` so an
-# adversarial header cannot stall the whole probe. Only ``429`` is retried —
-# a different 4xx/5xx is a real rejection and is returned as-is.
-_RETRY_429_ATTEMPTS = 3
-_RETRY_429_MAX_SLEEP_SECONDS = 5.0
-_RETRY_429_FALLBACK_SLEEP_SECONDS = 0.5
+# Retry budget for a transiently-degraded probe request. A 429 (Too Many
+# Requests) with a ``Retry-After`` header is a "slow down" signal; a 413
+# (Payload Too Large) and 502 (Bad Gateway) are server-side transients that
+# must NOT be mistaken for a length verdict either. Network failures (a
+# dropped/refused connection, a timeout) are likewise retried with exponential
+# backoff: a single break is NOT a boundary — only a persistent failure is.
+# ``_RETRY_ATTEMPTS`` bounds every retry; the backoff grows exponentially from
+# ``_RETRY_BACKOFF_BASE`` and is capped at ``_RETRY_MAX_SLEEP_SECONDS`` so an
+# adversarial server cannot stall the whole probe. A genuine 4xx/5xx that is
+# NOT transient (a real rejection such as ``404 model_not_found``) is returned
+# as-is and treated as a boundary, distinguishing it from the retryable set.
+_RETRY_ATTEMPTS = 3
+_RETRY_MAX_SLEEP_SECONDS = 5.0
+_RETRY_FALLBACK_SLEEP_SECONDS = 0.5
+_RETRY_BACKOFF_BASE = 0.05
+_RETRY_BACKOFF_FACTOR = 2.0
+
+# Status codes that signal a transiently degraded server rather than a length
+# verdict. 413 and 502 are NOT model refusals — they indicate the request or
+# the upstream was momentarily unusable, so they are retried before the length
+# is classified. A persistent 413/502 (every attempt) is surfaced honestly.
+_RETRYABLE_STATUS = (429, 413, 502)
 
 
-def _retry_after_delay(resp: httpx.Response) -> float:
-    """The seconds to back off for a rate-limited response.
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff for retry ``attempt`` (0-indexed), capped.
+
+    Grows as ``base * factor**attempt`` so earlier retries are frequent and
+    later ones spread out, bounded by :data:`_RETRY_MAX_SLEEP_SECONDS` so a
+    degraded server cannot stall the probe indefinitely.
+    """
+    delay = _RETRY_BACKOFF_BASE * (_RETRY_BACKOFF_FACTOR ** attempt)
+    return min(delay, _RETRY_MAX_SLEEP_SECONDS)
+
+
+def _retry_after_delay(resp: httpx.Response) -> float | None:
+    """The seconds to back off for a rate-limited response, or ``None``.
 
     ``Retry-After`` may carry a bare delay in seconds or an ``HTTP-date``. A
     bare ``seconds`` value is returned directly; an ``HTTP-date`` is honoured
-    as the seconds until that instant. A header we cannot parse falls back to
-    a nominal :data:`_RETRY_429_FALLBACK_SLEEP_SECONDS` so the caller never
-    spins synchronously without pause.
+    as the seconds until that instant. A header we cannot parse returns
+    ``None`` so the caller falls back to the exponential backoff instead of
+    spinning synchronously without pause.
     """
     raw = (resp.headers.get("Retry-After") or "").strip()
     if not raw:
-        return _RETRY_429_FALLBACK_SLEEP_SECONDS
+        return None
     try:
         return float(raw)
     except ValueError:
@@ -124,7 +146,7 @@ def _retry_after_delay(resp: httpx.Response) -> float:
     try:
         when = email.utils.parsedate_to_datetime(raw)
     except (TypeError, ValueError):
-        return _RETRY_429_FALLBACK_SLEEP_SECONDS
+        return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
     delay = (
@@ -133,36 +155,53 @@ def _retry_after_delay(resp: httpx.Response) -> float:
     return max(0.0, delay)
 
 
-async def _post_retry_429(
+async def _post_with_retry(
     client: httpx.AsyncClient,
     url: str,
     body: dict,
     timeout: httpx.Timeout,
 ) -> httpx.Response:
-    """POST ``body`` to ``url`` retrying transient HTTP 429 rate limits.
+    """POST ``body`` to ``url`` retrying transient failures with backoff.
 
-    A 429 (Too Many Requests) with a ``Retry-After`` header signals that the
-    server is temporarily rate-limiting us, not that the probed length was
-    rejected. We wait out the server's ``Retry-After`` window (capped at
-    :data:`_RETRY_429_MAX_SLEEP_SECONDS`) and retry up to
-    :data:`_RETRY_429_ATTEMPTS` times so a transient throttle is not mistaken
-    for a hard boundary. A successful response or any non-429 status is
-    returned as-is; if every attempt remains rate-limited, the last 429 is
-    returned so the caller classifies the length honestly.
+    A 429 with a ``Retry-After`` header signals that the server is temporarily
+    rate-limiting us, not that the probed length was rejected; a 413 or 502
+    signals an upstream/server-side transient, likewise NOT a model refusal. A
+    network failure (dropped or refused connection, timeout) is a transient
+    break, not a boundary. Each of these is retried with exponential backoff up
+    to :data:`_RETRY_ATTEMPTS` total, honouring an explicit ``Retry-After``
+    window (capped at :data:`_RETRY_MAX_SLEEP_SECONDS`) when present. A
+    successful response or any non-retryable status (a real rejection such as a
+    4xx model-not-found) is returned as-is so the caller classifies the length
+    honestly. If every attempt is a transient failure, the last transport error
+    is re-raised (so a persistently unreachable server surfaces as
+    ``httpx.HTTPError``) or, for a persistent retryable status, the last
+    response is returned.
     """
-    last: httpx.Response | None = None
-    for attempt in range(_RETRY_429_ATTEMPTS):
-        resp = await client.post(url, json=body, timeout=timeout)
-        if resp.status_code != 429:
+    last_resp: httpx.Response | None = None
+    last_exc: httpx.TransportError | None = None
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            resp = await client.post(url, json=body, timeout=timeout)
+        except httpx.TransportError as exc:
+            last_exc = exc
+            if attempt < _RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(_backoff_seconds(attempt))
+            continue
+        if resp.status_code not in _RETRYABLE_STATUS:
             return resp
-        last = resp
-        if attempt < _RETRY_429_ATTEMPTS - 1:
-            delay = min(
-                _retry_after_delay(resp), _RETRY_429_MAX_SLEEP_SECONDS
+        last_resp = resp
+        if attempt < _RETRY_ATTEMPTS - 1:
+            retry_after = _retry_after_delay(resp)
+            delay = (
+                retry_after
+                if retry_after is not None
+                else _backoff_seconds(attempt)
             )
-            await asyncio.sleep(delay)
-    assert last is not None
-    return last
+            await asyncio.sleep(min(delay, _RETRY_MAX_SLEEP_SECONDS))
+    if last_exc is not None:
+        raise last_exc
+    assert last_resp is not None
+    return last_resp
 
 # Tell the model to echo the first word so we can check whether the head
 # (which begins with the canary) survived the server's context handling.
@@ -295,12 +334,12 @@ async def _post_embed(
     """POST one embedding to ``endpoint``; return the vector on 200 else ``None``.
 
     A transient HTTP 429 (rate limit) is retried with backoff honouring the
-    server's ``Retry-After`` header via :func:`_post_retry_429` so a throttle
+    server's ``Retry-After`` header via :func:`_post_with_retry` so a throttle
     is not mistaken for a rejected length; a non-200 that survives the retry
     budget yields ``None``.
     """
     base = base_url.rstrip("/")
-    resp = await _post_retry_429(
+    resp = await _post_with_retry(
         client,
         f"{base}{endpoint}",
         {"input": prompt, "model": model},
@@ -460,14 +499,14 @@ async def _post_chat(
     the first word of the user message. The canary marker is the first word, so
     the reply echoes it only when the head of the prompt survived. A transient
     HTTP 429 (rate limit) is retried with backoff honouring the server's
-    ``Retry-After`` header via :func:`_post_retry_429` so a throttle is not
+    ``Retry-After`` header via :func:`_post_with_retry` so a throttle is not
     mistaken for a rejected length. Transport failures propagate (an
     unreachable server must surface as an ``httpx.HTTPError``, never a
     fabricated ``hard_error``); only a non-200 status or an unparsable body
     yields ``None``.
     """
     base = base_url.rstrip("/")
-    resp = await _post_retry_429(
+    resp = await _post_with_retry(
         client,
         f"{base}{path}",
         {
@@ -608,6 +647,16 @@ class _TransportAbort(Exception):
     """
 
 
+class _BudgetExhausted(Exception):
+    """Raised when the probe's request budget is exhausted mid-search.
+
+    The caller bounds the total number of probe requests with ``max_requests``
+    so a long/expensive probe cannot run unbounded. Once the budget is spent
+    the search cannot trust its bounds (no verdict was reached for the pending
+    length), so it must stop and report UNKNOWN rather than guess a boundary.
+    """
+
+
 async def _probe_lo(
     classify: Classifier, lo: int, hi: int
 ) -> tuple[int, int]:
@@ -638,6 +687,38 @@ async def _probe_hi(classify: Classifier, n: int) -> str:
     ``cliff_behavior``. Returns the raw outcome string.
     """
     return await classify(n)
+
+
+def _budget_exceeded(requests: list[int], max_requests: int | None) -> bool:
+    """Return ``True`` when the request budget has been fully spent.
+
+    ``requests[0]`` counts every probe request already issued by the caller
+    (including calibration and exactness checks outside the search loop), so the
+    boundary is checked against the *total* spent, not just the search's own
+    count. ``max_requests`` of ``None`` means unlimited — the probe never stops
+    for budget reasons.
+    """
+    return max_requests is not None and requests[0] >= max_requests
+
+
+def _budget_exhausted_result(
+    endpoint: str, requests_used: int
+) -> CapacityResult:
+    """A ``CapacityResult`` marking the search aborted by an exhausted budget.
+
+    The probe ran out of ``max_requests`` before reaching a verdict, so there is
+    no measured boundary: the token count is ``0`` and its provenance is
+    ``UNKNOWN`` — we honestly report that capacity could not be determined
+    within the allowed request budget rather than fabricating a cliff.
+    """
+    return CapacityResult(
+        endpoint=endpoint,
+        max_accepted_tokens=0,
+        max_accepted_source=Provenance.UNKNOWN,
+        token_count_exact=False,
+        cliff_behavior=CliffBehavior.TRANSPORT_ERROR,
+        probe_requests_used=requests_used,
+    )
 
 
 def _transport_result(endpoint: str, requests_used: int) -> CapacityResult:
@@ -683,6 +764,7 @@ async def _binary_search(
     ceiling: int,
     exact: bool,
     requests: list[int],
+    max_requests: int | None = None,
 ) -> CapacityResult:
     """Binary-search over input length ``n`` in ``[LO, ceiling]``.
 
@@ -706,12 +788,20 @@ async def _binary_search(
     the search aborts immediately: the bounds can no longer be trusted, so the
     result is marked ``UNKNOWN`` (see :func:`_transport_result`) rather than a
     found boundary.
+
+    ``max_requests``, when given, bounds the total number of probe requests the
+    search (and any pending follow-up classification) may issue. Once the
+    budget is exhausted the search cannot reach a verdict for the length being
+    probed, so it aborts and reports UNKNOWN — an honest "we ran out of budget
+    before finding a boundary" rather than a guessed measurement.
     """
     # If the ceiling itself is accepted there is no cliff within range. The
     # true maximum is then unknown — it lies somewhere above ``ceiling`` — so
     # ``ceiling`` is only a lower bound, never a measured maximum. We therefore
     # mark ``max_accepted_source`` UNKNOWN rather than report a measurement the
     # probe does not have (mirrors the below-``LO`` handling above).
+    if _budget_exceeded(requests, max_requests):
+        return _budget_exhausted_result(endpoint, requests[0])
     ceiling_outcome = await classify(ceiling)
     if ceiling_outcome == "accepted":
         return CapacityResult(
@@ -731,11 +821,15 @@ async def _binary_search(
     try:
         lo, hi = LO, ceiling
         while lo <= hi:
+            if _budget_exceeded(requests, max_requests):
+                return _budget_exhausted_result(endpoint, requests[0])
             lo, hi = await _probe_lo(classify, lo, hi)
     except _TransportAbort:
         return _transport_result(endpoint, requests[0])
 
     max_accepted = hi
+    if _budget_exceeded(requests, max_requests):
+        return _budget_exhausted_result(endpoint, requests[0])
     cliff_outcome = await _probe_hi(classify, max_accepted + 1)
     if cliff_outcome == "transport_error":
         return _transport_result(endpoint, requests[0])
@@ -762,6 +856,7 @@ async def _binary_search_chat(
     model: str,
     requests: list[int],
     timeout: httpx.Timeout,
+    max_requests: int | None = None,
 ) -> CapacityResult:
     """Binary-search the ``/v1/chat/completions`` cliff.
 
@@ -773,7 +868,9 @@ async def _binary_search_chat(
             client, base_url, endpoint, n, model, requests, timeout
         )
 
-    return await _binary_search(classify, endpoint, ceiling, exact, requests)
+    return await _binary_search(
+        classify, endpoint, ceiling, exact, requests, max_requests
+    )
 
 
 async def probe_capacity(
@@ -785,6 +882,7 @@ async def probe_capacity(
     model: str | None = None,
     timeout: float | None = None,
     safe: bool = False,
+    max_requests: int | None = None,
 ) -> CapacityResult | None:
     """Determine the largest accepted input length and how the server fails.
 
@@ -804,7 +902,11 @@ async def probe_capacity(
     given, bounds every HTTP request the probe issues (defaulting to the
     client's configured timeout when omitted). ``safe``, when True, skips the
     probe entirely and returns ``None``: the caller then reports no measured
-    capacity rather than a fabricated value.
+    capacity rather than a fabricated value. ``max_requests``, when given,
+    bounds the total number of probe HTTP requests (a hard cap so an
+    adversarial or pathological server cannot drive an unbounded search); when
+    the budget is exhausted before a verdict the search aborts and reports
+    UNKNOWN rather than guessing a boundary.
     """
     if safe:
         return None
@@ -838,7 +940,15 @@ async def probe_capacity(
         ):
             return _calibration_failed_result(path, requests[0])
         return await _binary_search_chat(
-            client, base_url, path, ceiling, exact, model, requests, per_request
+            client,
+            base_url,
+            path,
+            ceiling,
+            exact,
+            model,
+            requests,
+            per_request,
+            max_requests,
         )
 
     async def classify(n: int) -> str:
@@ -846,4 +956,4 @@ async def probe_capacity(
             client, base_url, path, n, model, requests, per_request
         )
 
-    return await _binary_search(classify, path, ceiling, exact, requests)
+    return await _binary_search(classify, path, ceiling, exact, requests, max_requests)

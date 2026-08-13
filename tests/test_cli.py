@@ -87,6 +87,7 @@ def test_cli_options_are_declared() -> None:
     assert "--api-key" in opts
     assert "--timeout" in opts
     assert "--json-schema" in opts
+    assert "--max-requests" in opts
 
 
 def test_json_schema_prints_valid_json_and_exits_zero() -> None:

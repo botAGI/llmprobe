@@ -12,3 +12,4 @@ llmprobe 0.1.0 · measured 2026-08-11T07:38:33Z (UTC)
 | max input tokens (/completion) | unknown | 8192 | measured | ok |
 | token count (/completion) | unknown | exact | measured | ok |
 | cliff behaviour (/completion) | unknown | accepted | measured | ok |
+| probe requests used (/completion) | unknown | 3 | measured | ok |
