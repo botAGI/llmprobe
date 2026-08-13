@@ -75,12 +75,14 @@ _FINAL_A = "llmprobeFinalA"
 _FINAL_B = "llmprobeFinalB"
 _CANARY = "ZQX7"
 
-# Before trusting any marker-based silent-truncation verdict we verify that the
-# server can echo the canary marker (``_CANARY``) from the head of a short,
-# certainly-accepted input at all. ``_CALIBRATION_TOKENS`` is that short input's
-# length. A server that cannot echo the marker even here cannot be probed for
-# truncation this way, so the whole measurement reports UNKNOWN rather than a
-# confident ``silent_truncation`` verdict.
+# Before trusting any marker-based silent-truncation verdict we calibrate the
+# marker-echo mechanism on a short, certainly-accepted input where truncation
+# is impossible. ``_CALIBRATION_TOKENS`` is that input's length. For chat we
+# verify the server can echo the canary marker (``_CANARY``) from the head; for
+# embeddings we verify the server can distinguish two prompts that differ only
+# in their final token. A server that cannot preserve the marker even here
+# cannot be probed for truncation that way, so the whole measurement reports
+# UNKNOWN rather than a confident ``silent_truncation`` verdict.
 _CALIBRATION_TOKENS = 64
 
 # A prompt's per-request timeout grows with its token count so the server has
@@ -438,6 +440,50 @@ async def _embeddings_differ(
     vb = await _post_embed(client, base_url, endpoint, b, model, per_request)
     if va is None or vb is None:
         raise _EmbeddingHardError
+    return _cosine(va, vb) <= COSINE_SIMILARITY_THRESHOLD
+
+
+async def _embed_calibration_passes(
+    client: httpx.AsyncClient,
+    base_url: str,
+    endpoint: str,
+    model: str,
+    timeout: httpx.Timeout,
+) -> bool:
+    """Return whether the two-prompt method works on this server.
+
+    The embeddings probe detects silent truncation by sending two prompts of the
+    same length that differ ONLY in their final token (``_FINAL_A`` vs
+    ``_FINAL_B``) and comparing the returned vectors: a server that silently
+    drops the tail collapses them to identical vectors. That check is only
+    meaningful if the server's embedding genuinely distinguishes a differing
+    final token at all, so we calibrate first: send two short
+    (``_CALIBRATION_TOKENS``-token) prompts, far below any truncation limit,
+    differing only in the final marker, and verify the returned vectors differ.
+    A server that returns identical vectors even here cannot be probed for
+    truncation this way, so the caller reports UNKNOWN instead of a confident
+    ``silent_truncation`` verdict.
+
+    Returns ``True`` when the markers are distinguishable (or when a hard error
+    leaves the check inconclusive — the input was rejected rather than proven to
+    collapse, so the real search is allowed to surface that rejection). Returns
+    ``False`` only when both vectors come back identical, which provably shows
+    the differing final marker is discarded even where truncation is impossible.
+    A transport failure (timeout, dropped connection) propagates as
+    ``httpx.HTTPError`` for the caller to classify honestly.
+    """
+    a = await _n_token_prompt(
+        client, base_url, _CALIBRATION_TOKENS, _FINAL_A, timeout
+    )
+    b = await _n_token_prompt(
+        client, base_url, _CALIBRATION_TOKENS, _FINAL_B, timeout
+    )
+    _assert_differ_only_in_final_token(a, b)
+    per_request = httpx.Timeout(_scale_timeout(timeout, _CALIBRATION_TOKENS))
+    va = await _post_embed(client, base_url, endpoint, a, model, per_request)
+    vb = await _post_embed(client, base_url, endpoint, b, model, per_request)
+    if va is None or vb is None:
+        return True
     return _cosine(va, vb) <= COSINE_SIMILARITY_THRESHOLD
 
 
@@ -950,6 +996,27 @@ async def probe_capacity(
             per_request,
             max_requests,
         )
+
+    # Calibrate the two-prompt method before trusting any silent-truncation
+    # verdict: on a short, certainly-accepted input the server must
+    # distinguish prompts that differ only in their final token. If it cannot,
+    # the method is inapplicable and we report UNKNOWN rather than a confident
+    # ``silent_truncation`` verdict we could not reliably obtain. A transport
+    # failure here (timeout, dropped connection) means we could not even reach
+    # a verdict about the method, so it aborts to UNKNOWN like any other
+    # transport error; a genuinely unreachable server propagates as
+    # ``httpx.HTTPError``.
+    requests[0] += 2
+    try:
+        applicable = await _embed_calibration_passes(
+            client, base_url, path, model, per_request
+        )
+    except httpx.TransportError as exc:
+        if isinstance(exc, _PROPAGATED_TRANSPORT):
+            raise
+        return _transport_result(path, requests[0])
+    if not applicable:
+        return _calibration_failed_result(path, requests[0])
 
     async def classify(n: int) -> str:
         return await _embed_classify(

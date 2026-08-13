@@ -239,6 +239,38 @@ async def test_vllm_prompt_tokens_yields_exact_count() -> None:
 
 
 @pytest.mark.asyncio
+async def test_embedding_marker_collapse_is_unknown_not_silent_truncation() -> None:
+    """A server whose embedding cannot distinguish the tail markers must be UNKNOWN.
+
+    The embeddings probe detects silent truncation by sending two same-length
+    prompts that differ ONLY in their final token and comparing the returned
+    vectors. That check is only meaningful if the server's embedding genuinely
+    distinguishes a differing final token at all. Some fully-honest servers
+    derive their embedding from everything but the last token, so two prompts
+    differing only in that token collapse to the SAME vector even when no
+    truncation occurs. Without a guard, the two-prompt check would fabricate a
+    ``silent_truncation`` verdict that the server does not exhibit.
+
+    The probe must therefore CALIBRATE the two-prompt method first: even the
+    short calibration input (where truncation is impossible) cannot be
+    distinguished, so the tool reports UNKNOWN (no measured boundary) rather
+    than a confident ``silent_truncation``. If the calibration guard is reverted
+    the probe would walk the search and report ``silent_truncation`` for a
+    server that never truncates — this test must turn red.
+    """
+    server = make_mock_server(
+        max_tokens=512, behavior="honest", embeddings_ignore_last_token=True
+    )
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client, BASE_URL, EMBED_ENDPOINT, ceiling=32768, backend=Backend.LLAMACPP, model="mock"
+        )
+    assert result is not None
+    assert result.cliff_behavior != CliffBehavior.SILENT_TRUNCATION
+    assert result.max_accepted_source == Provenance.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_chat_hard_error_server_cliff() -> None:
     """A chat hard_error server: max accepted is exactly max_tokens; cliff is HARD_ERROR."""
     server = make_mock_server(max_tokens=512, behavior="hard_error")

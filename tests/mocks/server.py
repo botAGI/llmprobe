@@ -38,6 +38,7 @@ def make_mock_server(
     required_model: str | None = None,
     slots_disabled: bool = False,
     chat_marker_reply: str | None = None,
+    embeddings_ignore_last_token: bool = False,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -82,6 +83,14 @@ def make_mock_server(
     ``'ZQ'`` instead of the full ``'ZQX7'`` canary). It is used to prove the
     marker-echo calibration refuses to report a confident ``silent_truncation``
     verdict it cannot verify.
+
+    When ``embeddings_ignore_last_token`` is set, the embeddings endpoint derives
+    every embedding from all but the last token of the input regardless of its
+    length. This models a server whose embedding cannot distinguish a differing
+    FINAL token even on a short, certainly-accepted input (so the two-prompt
+    marker method is inapplicable). It is used to prove the embeddings
+    calibration refuses to report a confident ``silent_truncation`` verdict it
+    cannot verify.
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
@@ -213,6 +222,8 @@ def make_mock_server(
         for item in inputs:
             tokens = _split_words(item)
             limit = max_tokens if behavior == "silent_truncation" else None
+            if embeddings_ignore_last_token:
+                tokens = tokens[:-1] if len(tokens) > 1 else tokens
             results.append(
                 {
                     "object": "embedding",
