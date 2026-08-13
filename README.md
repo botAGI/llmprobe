@@ -1,5 +1,7 @@
 # llmprobe
 
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://pypi.org/project/llmprobe/)
+
 **Point it at a running local inference server. It tells you what that server can actually do — measured, not claimed.**
 
 Your `llama-server` says it serves 8192 tokens of context. Your embedding endpoint
