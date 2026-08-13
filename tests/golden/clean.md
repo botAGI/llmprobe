@@ -13,3 +13,5 @@ llmprobe 0.1.0 · measured 2026-08-11T07:38:33Z (UTC)
 | token count (/completion) | unknown | exact | measured | ok |
 | cliff behaviour (/completion) | unknown | accepted | measured | ok |
 | probe requests used (/completion) | unknown | 3 | measured | ok |
+| requests spent | unknown | 3 | measured | ok |
+| measured at | unknown | 2026-08-11T07:38:33Z | measured | ok |
