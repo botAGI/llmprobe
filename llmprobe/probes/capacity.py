@@ -52,6 +52,15 @@ COSINE_SIMILARITY_THRESHOLD = 0.9999
 # import from ``cli`` (capacity is backend-facing, not CLI-facing).
 DEFAULT_TIMEOUT = 120.0
 
+# Default hard cap on the total number of probe HTTP requests (the
+# ``--max-requests`` budget). A binary search to the default ceiling needs at
+# most a few dozen classifications; 1000 leaves generous headroom for the
+# per-request retries (each transient failure costs up to ``_RETRY_ATTEMPTS``
+# attempts) while still bounding an adversarial or pathological server that
+# would otherwise drive the search unbounded. ``None`` (explicitly passed)
+# still means unlimited for callers that opt out.
+DEFAULT_MAX_REQUESTS = 1000
+
 # Surface a single, greppable flag when identical embeddings confirm that the
 # server silently discarded the differing tail. The value is a measured fact:
 # the two prompts were verified to differ only in the final token and the
@@ -882,7 +891,7 @@ async def probe_capacity(
     model: str | None = None,
     timeout: float | None = None,
     safe: bool = False,
-    max_requests: int | None = None,
+    max_requests: int | None = DEFAULT_MAX_REQUESTS,
 ) -> CapacityResult | None:
     """Determine the largest accepted input length and how the server fails.
 
@@ -902,11 +911,12 @@ async def probe_capacity(
     given, bounds every HTTP request the probe issues (defaulting to the
     client's configured timeout when omitted). ``safe``, when True, skips the
     probe entirely and returns ``None``: the caller then reports no measured
-    capacity rather than a fabricated value. ``max_requests``, when given,
-    bounds the total number of probe HTTP requests (a hard cap so an
-    adversarial or pathological server cannot drive an unbounded search); when
-    the budget is exhausted before a verdict the search aborts and reports
-    UNKNOWN rather than guessing a boundary.
+    capacity rather than a fabricated value. ``max_requests`` bounds the total
+    number of probe HTTP requests (a hard cap so an adversarial or pathological
+    server cannot drive an unbounded search), defaulting to
+    :data:`DEFAULT_MAX_REQUESTS`; when the budget is exhausted before a verdict
+    the search aborts and reports UNKNOWN rather than guessing a boundary.
+    Pass ``None`` explicitly to opt out of the cap.
     """
     if safe:
         return None

@@ -21,7 +21,11 @@ import typer
 from rich.console import Console
 
 from llmprobe.backends import DEFAULT_PROBE_ENDPOINTS
-from llmprobe.probes.capacity import DEFAULT_CEILING, probe_capacity
+from llmprobe.probes.capacity import (
+    DEFAULT_CEILING,
+    DEFAULT_MAX_REQUESTS,
+    probe_capacity,
+)
 from llmprobe.probes.config import read_effective_config
 from llmprobe.probes.slots import check_slots
 from llmprobe.report import to_json, to_json_schema, to_markdown
@@ -219,7 +223,7 @@ async def probe(
     endpoint: Endpoint | str = Endpoint.AUTO,
     timeout: float = DEFAULT_TIMEOUT,
     api_key: str | None = None,
-    max_requests: int | None = None,
+    max_requests: int | None = DEFAULT_MAX_REQUESTS,
     *,
     chat: bool = False,
 ) -> ProbeReport:
@@ -368,10 +372,11 @@ def main(
             help=(
                 "Hard cap on the total number of probe HTTP requests. When "
                 "exhausted before a capacity verdict is reached, capacity is "
-                "reported as UNKNOWN rather than run unbounded."
+                f"reported as UNKNOWN rather than run unbounded (default: "
+                f"{DEFAULT_MAX_REQUESTS})."
             ),
         ),
-    ] = None,
+    ] = DEFAULT_MAX_REQUESTS,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
     if json_schema:
