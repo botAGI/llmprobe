@@ -219,6 +219,7 @@ async def probe(
     endpoint: Endpoint | str = Endpoint.AUTO,
     timeout: float = DEFAULT_TIMEOUT,
     api_key: str | None = None,
+    max_requests: int | None = None,
     *,
     chat: bool = False,
 ) -> ProbeReport:
@@ -229,7 +230,10 @@ async def probe(
     ``"embeddings"``, ``"auto"``); matching strings are coerced to the
     ``Endpoint`` member. For the README-promised ``--endpoint chat`` the
     ``chat=True`` shorthand is an equivalent, explicit way to select the chat
-    endpoint (``Endpoint.CHAT``); when given, it takes precedence.
+    endpoint (``Endpoint.CHAT``); when given, it takes precedence. ``max_requests``,
+    when given, caps the total probe HTTP requests so an adversarial or
+    pathological server cannot drive an unbounded search; an exhausted budget
+    reports capacity UNKNOWN instead of a guessed boundary.
     """
     endpoint = Endpoint.CHAT if chat else _coerce_endpoint(endpoint)
     async with _make_client(base_url, api_key, timeout) as client:
@@ -261,6 +265,7 @@ async def probe(
                     model=config.model_id,
                     timeout=timeout,
                     safe=False,
+                    max_requests=max_requests,
                 )
                 if cap is not None:
                     capacity.append(cap)
@@ -356,6 +361,17 @@ def main(
             ),
         ),
     ] = None,
+    max_requests: Annotated[
+        int | None,
+        typer.Option(
+            "--max-requests",
+            help=(
+                "Hard cap on the total number of probe HTTP requests. When "
+                "exhausted before a capacity verdict is reached, capacity is "
+                "reported as UNKNOWN rather than run unbounded."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Probe ``BASE_URL`` and report what the server can actually do."""
     if json_schema:
@@ -374,6 +390,7 @@ def main(
                 endpoint=endpoint,
                 timeout=timeout,
                 api_key=api_key,
+                max_requests=max_requests,
             )
         )
     except httpx.HTTPError as exc:

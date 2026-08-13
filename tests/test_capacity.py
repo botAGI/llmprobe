@@ -648,3 +648,37 @@ async def test_no_model_returns_unknown_not_placeholder() -> None:
         )
     assert result is None
 
+
+@pytest.mark.asyncio
+async def test_max_requests_exhaustion_reports_unknown_not_fabricated() -> None:
+    """An exhausted ``max_requests`` budget must NOT fabricate a boundary.
+
+    The ``--max-requests`` cap (a hard bound on probe HTTP requests) must be
+    honoured honestly: when the budget is spent before the search reaches a
+    verdict, the probe reports an UNKNOWN capacity (0 accepted, TRANSPORT_ERROR
+    cliff) rather than guessing a measured boundary it never obtained. A tiny
+    budget that cannot even cover the exactness check plus the ceiling probe
+    must therefore surface as UNKNOWN, proving the cap is enforced rather than
+    ignored.
+    """
+    server = make_mock_server(max_tokens=512, behavior="hard_error")
+    async with _client(server) as client:
+        result = await probe_capacity(
+            client,
+            BASE_URL,
+            EMBED_ENDPOINT,
+            ceiling=32768,
+            backend=Backend.LLAMACPP,
+            model="mock",
+            max_requests=1,
+        )
+    assert result is not None
+    assert result.max_accepted_source == Provenance.UNKNOWN
+    assert result.max_accepted_tokens == 0
+    assert result.cliff_behavior == CliffBehavior.TRANSPORT_ERROR
+    # The budget is honoured between classifications, so the count may
+    # overshoot a tiny cap by at most one classification's worth of requests;
+    # it must remain far below what a full binary search would use, proving the
+    # cap aborted the search rather than being ignored.
+    assert result.probe_requests_used < 100
+

@@ -271,6 +271,10 @@ def _capacity_rows(report: ProbeReport) -> list[str]:
             f"| cliff behaviour ({endpoint}) | unknown | "
             f"{cap.cliff_behavior.value} | {Provenance.MEASURED.value} | {ceil} |"
         )
+        rows.append(
+            f"| probe requests used ({endpoint}) | unknown | "
+            f"{cap.probe_requests_used} | {Provenance.MEASURED.value} | ok |"
+        )
     return rows
 
 
