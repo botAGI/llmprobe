@@ -29,7 +29,9 @@ inspected.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 import uvicorn
@@ -37,6 +39,37 @@ import uvicorn
 RequestModel = dict
 
 DEFAULT_MAX_TOKENS = 4096
+
+EMBED_DIM = 384
+
+
+def _split_words(text: str) -> list[str]:
+    return text.split()
+
+
+def _embed(tokens: list[str]) -> list[float]:
+    """A deterministic embedding derived from the FULL token list.
+
+    Any change to the input — including a single differing tail token — changes
+    the vector, so two prompts that differ only in their final token produce
+    distinct embeddings. This is the honest counterpart to a silently
+    truncating server, which would return identical vectors regardless of the
+    dropped tail.
+    """
+    base = "\x1f".join(tokens).encode("utf-8")
+    vector: list[float] = []
+    for i in range(EMBED_DIM):
+        digest = hashlib.sha256(base + str(i).encode("utf-8")).digest()
+        value = (int.from_bytes(digest[:8], "big") / 2**64) * 2.0 - 1.0
+        vector.append(round(value, 12))
+    return vector
+
+
+def _input_items(body: RequestModel) -> list[str]:
+    raw = body.get("input", "")
+    if isinstance(raw, str):
+        return [raw]
+    return [str(x) for x in list(raw)]
 
 
 class FakeServer:
