@@ -78,7 +78,9 @@ async def test_llamacpp_adapter_wins_over_generic_on_llamacpp_fixtures() -> None
     config, findings = await _read(routes)
 
     assert config.backend == Backend.LLAMACPP
-    assert config.n_ctx_total == 32768
+    # Per-slot context is read; the total is left unknown rather than inferred
+    # as per-slot x slots, which a unified KV cache makes wrong by that factor.
+    assert config.n_ctx_total is None
     assert config.n_ctx_per_slot == 8192
     assert config.total_slots == 4
     assert findings == []

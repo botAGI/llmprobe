@@ -444,7 +444,13 @@ def main(
     if json_output:
         typer.echo(to_json(report))
     else:
-        _console.print(to_markdown(report))
+        # The card is markdown, not console markup, and rich reads `[...]` as
+        # its own: `**[mismatch] UBATCH_CEILING**` reached the terminal as
+        # `** UBATCH_CEILING**`, dropping the one word that states the verdict.
+        # soft_wrap keeps table rows on one line so the card survives a pipe.
+        _console.print(
+            to_markdown(report), markup=False, highlight=False, soft_wrap=True
+        )
 
     findings = report.findings
     if any(f.severity == Severity.ERROR for f in findings):

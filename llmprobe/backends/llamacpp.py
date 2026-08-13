@@ -81,12 +81,17 @@ async def read_config(client: httpx.AsyncClient, base_url: str) -> EffectiveConf
     if n_ctx_per_slot is not None:
         merge["n_ctx_per_slot"] = Provenance.READ
 
+    # The total context is deliberately left unknown. Multiplying the per-slot
+    # context by the slot count assumes every slot owns its own KV cache, and
+    # modern llama.cpp defaults to a unified one where each slot sees the whole
+    # context instead. Verified on a live b9049 server started with
+    # --ctx-size 8192: `n_parallel = 4 and kv_unified = true`, `n_ctx = 8192`,
+    # and four slots each reporting n_ctx = 8192 — the product, 32768, was four
+    # times the truth. `kv_unified` is not published on /props, so the answer
+    # cannot be read, and an inferred value that is wrong by a factor of the
+    # slot count is worse than an honest unknown.
     n_ctx_total: int | None = None
-    if isinstance(n_ctx_per_slot, int) and isinstance(total_slots, int):
-        n_ctx_total = n_ctx_per_slot * total_slots
-        merge["n_ctx_total"] = Provenance.INFERRED
-    else:
-        merge["n_ctx_total"] = Provenance.UNKNOWN
+    merge["n_ctx_total"] = Provenance.UNKNOWN
 
     # /slots is optional: with --no-slots the server returns 501. Tolerate it,
     # but log the failure rather than swallowing it silently so a real problem

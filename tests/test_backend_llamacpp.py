@@ -218,3 +218,29 @@ async def test_integration_llamacpp_compatible_path_with_disabled_slots() -> Non
     assert config.n_batch is None
     assert config.sources["n_batch"] == Provenance.UNKNOWN
     assert findings == []
+
+
+async def test_total_context_is_not_invented_by_multiplying_slots() -> None:
+    """Per-slot context times slot count is not the total, and is not knowable.
+
+    Modern llama.cpp defaults to a unified KV cache, where every slot sees the
+    whole context instead of owning a slice of it. Verified against a live
+    b9049 server started with ``--ctx-size 8192``: the log reads
+    ``n_parallel = 4 and kv_unified = true``, ``llama_context: n_ctx = 8192``
+    and four slots each reporting ``n_ctx = 8192`` -- so the honest total is
+    8192, while the multiplication reported 32768, inflating it fourfold.
+
+    ``kv_unified`` is absent from ``/props`` (checked key by key on that
+    server), so the answer cannot be read and must not be guessed: a confident
+    guess is exactly what this tool exists to refuse.
+    """
+    async with _client() as client:
+        config = await read_config(client, BASE_URL)
+
+    assert config.n_ctx_per_slot is not None, "fixture must expose a per-slot context"
+    assert config.total_slots is not None, "fixture must expose a slot count"
+    product = config.n_ctx_per_slot * config.total_slots
+    assert config.n_ctx_total != product or config.n_ctx_total is None, (
+        "total context was invented by multiplying per-slot context by slots"
+    )
+    assert config.sources["n_ctx_total"] is Provenance.UNKNOWN

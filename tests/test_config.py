@@ -96,5 +96,10 @@ async def test_advertised_total_slots_is_respected() -> None:
     assert config.backend == Backend.LLAMACPP
     assert config.total_slots == 4
     assert config.sources["total_slots"] == Provenance.READ
-    assert config.n_ctx_total == 8192 * 4 == 32768
-    assert config.sources["n_ctx_total"] == Provenance.INFERRED
+    # The slot count is authoritative; the total context derived from it was
+    # not. A live b9049 server with --ctx-size 8192 logs `kv_unified = true`
+    # and gives all four slots the whole 8192, so the old product of 32768 was
+    # four times the truth, and /props does not publish kv_unified to tell them
+    # apart.
+    assert config.n_ctx_total is None
+    assert config.sources["n_ctx_total"] == Provenance.UNKNOWN
