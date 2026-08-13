@@ -111,7 +111,7 @@ def test_truncated_canary_echo_is_never_silent_truncation(
         f"truncated-marker probe exited {result.exit_code}: {result.output}"
     )
 
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     capacity = payload["capacity"]
     assert len(capacity) >= 1, "expected a capacity entry for an honest server"
 

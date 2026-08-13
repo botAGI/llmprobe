@@ -142,7 +142,7 @@ def test_end_to_end_embedding_truncation_boundary_is_exact(
     # value of this test is that the measured edge is EXACT, not the exit code.
     assert result.exit_code == 0, result.output
 
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
 
     # The probe must have exercised exactly the embeddings endpoint only.
     entries = payload["capacity"]
@@ -182,7 +182,7 @@ def test_end_to_end_honest_server_verdict_is_accepted_without_false_alarms(
 
     assert result.exit_code == 0, result.output
 
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
 
     # No false alarms: an honest server produces no findings at all.
     assert payload["findings"] == []
@@ -217,7 +217,7 @@ def test_end_to_end_truncation_at_4096_is_measured_within_five_percent(
 
     result = _invoke(server, monkeypatch, [BASE_URL, "--probe", "--json"])
 
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
 
     assert payload["capacity"], "expected the capacity probe to report"
     for entry in payload["capacity"]:

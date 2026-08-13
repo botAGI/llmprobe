@@ -165,7 +165,7 @@ def test_honest_deterministic_server_never_false_alarms(monkeypatch: pytest.Monk
         f"honest server probe exited {result.exit_code}: {result.output}"
     )
 
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     max_tokens, provenance = _capacity_max_tokens(payload)
 
     # The false alarm symptom is a small number like 15: the old logic read the
@@ -210,7 +210,7 @@ def test_honest_deterministic_server_exceeds_small_bound(monkeypatch: pytest.Mon
     )
     assert result.exit_code == 0, result.output
 
-    max_tokens, _ = _capacity_max_tokens(json.loads(result.output))
+    max_tokens, _ = _capacity_max_tokens(json.loads(result.stdout))
     assert max_tokens > DEFAULT_CEILING // 2, (
         f"honest server reported a cliff at {max_tokens}, far below the "
         "multi-thousand-token ceiling it genuinely accepts"
