@@ -29,9 +29,11 @@ from llmprobe.models import (
     Backend,
     CapacityResult,
     CliffBehavior,
+    EffectiveConfig,
     Endpoint,
     Finding,
     ProbeReport,
+    Provenance,
     Severity,
     redact_userinfo,
 )
@@ -144,32 +146,68 @@ def _endpoint_for_path(path: str) -> Endpoint:
     raise ValueError(f"unknown probe path: {path!r}")
 
 
+def _capacity_allowance(baseline: int) -> int:
+    """Tokens a healthy server may fall short by without it being a defect.
+
+    A prompt never fills the configured context exactly: BOS/EOS and chat
+    template scaffolding cost tokens, so a correctly configured server measures
+    slightly under its own ``n_ctx``. Live control, llama.cpp b9049 with
+    ``-b 8192 -ub 8192``: configured 8192, measured 8190. A real capacity defect
+    is multiplicative, not additive — the founding incident measured 510 against
+    a configured 8192 — so an additive allowance separates the two cleanly
+    without hiding any ceiling that matters.
+    """
+    return max(64, baseline // 20)
+
+
 def _capacity_findings(
     claimed_ctx: int | None,
     cap: CapacityResult,
+    config: EffectiveConfig | None = None,
 ) -> list[Finding]:
-    """Surface a measured cliff below the claimed context as a mismatch finding.
+    """Surface a measured cliff below the expected context as a mismatch.
 
-    A cliff (silent truncation or hard error) found strictly below the context
-    the caller claimed with ``--claimed-ctx`` is a mismatch worth failing on.
-    When there is no ``claimed_ctx``, or the measured cliff is not below it,
-    nothing is emitted. Comparing ``claimed_ctx`` against the measured
-    ``cap.max_accepted_tokens`` is the mismatch check that drives exit code 1.
+    The baseline is the operator's ``--claimed-ctx`` when given, and otherwise
+    the per-slot context the server itself reported. The fallback is the point
+    of the tool: an operator who knew the real ceiling would not be probing for
+    it, and llama.cpp publishes ``n_ctx_per_slot`` on ``/props`` while keeping
+    ``n_ubatch`` — the parameter that actually caps the request — unreadable.
+    Only a ``read`` context may accuse the server; an inferred one is our own
+    arithmetic, and measuring against our own guess is the confident guess this
+    tool exists to refuse.
+
+    The finding code names a cause, and a cause is only defensible when it was
+    measured: ``UBATCH_CEILING`` is claimed solely when the server reported
+    being configured for materially more than it delivers. With nothing but an
+    operator-supplied number, the honest code states the shortfall and blames
+    nothing.
     """
-    if claimed_ctx is None:
-        return []
     if cap.cliff_behavior not in (
         CliffBehavior.SILENT_TRUNCATION,
         CliffBehavior.HARD_ERROR,
     ):
         return []
-    if cap.max_accepted_tokens >= claimed_ctx:
+
+    server_ctx: int | None = None
+    if config is not None and config.n_ctx_per_slot is not None:
+        if config.sources.get("n_ctx_per_slot") is Provenance.READ:
+            server_ctx = config.n_ctx_per_slot
+
+    baseline = claimed_ctx if claimed_ctx is not None else server_ctx
+    if baseline is None:
         return []
+    if cap.max_accepted_tokens + _capacity_allowance(baseline) >= baseline:
+        return []
+
+    blames_server = (
+        server_ctx is not None
+        and cap.max_accepted_tokens + _capacity_allowance(server_ctx) < server_ctx
+    )
     return [
         Finding(
             severity=Severity.MISMATCH,
-            code="UBATCH_CEILING",
-            advertised=claimed_ctx,
+            code="UBATCH_CEILING" if blames_server else "CAPACITY_BELOW_CLAIM",
+            advertised=server_ctx if blames_server else baseline,
             measured=cap.max_accepted_tokens,
             message=(
                 f"requests past {cap.max_accepted_tokens} tokens are "
@@ -272,7 +310,9 @@ async def probe(
                     # Compare --claimed-ctx against the measured
                     # max_accepted_tokens; a claimed_ctx mismatch is surfaced as
                     # a MISMATCH finding => exit 1.
-                    findings.extend(_capacity_findings(claimed_ctx, cap))
+                    findings.extend(
+                        _capacity_findings(claimed_ctx, cap, config)
+                    )
 
         report_url = redact_base_url(base_url)
         return ProbeReport(

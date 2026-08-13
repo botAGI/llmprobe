@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from llmprobe.models import (
+    Backend,
     CliffBehavior,
     ProbeReport,
     Provenance,
@@ -62,7 +63,7 @@ _VERSION = _tool_version()
 _HEADER_ROW = "| Property | Claimed | Measured | Source | Verdict |"
 _SEPARATOR_ROW = "| --- | --- | --- | --- | --- |"
 
-_CEILING_CODE_SUBSTRINGS = ("BATCH", "UBATCH", "CEILING")
+_CEILING_CODE_SUBSTRINGS = ("BATCH", "UBATCH", "CEILING", "CAPACITY_BELOW")
 
 # Markdown meta-characters that can inject structure (headings, emphasis,
 # code, links, HTML, table separators) when a user- or server-provided string
@@ -324,18 +325,24 @@ def _fix_lines(report: ProbeReport) -> list[str]:
         return []
 
     ceiling.sort(key=lambda f: f.code)
-    measured = ceiling[0].measured
-    if not isinstance(measured, int) or measured <= 0:
-        measured = ceiling[0].advertised
-    if not isinstance(measured, int) or measured <= 0:
+    # The remedy restores the context the server was configured for, so the
+    # number is the ADVERTISED one. Deriving it from the measured cliff told a
+    # server broken by ``ubatch=512`` to set ``--ubatch-size 512`` — the value
+    # already in force, and the cause of the defect being reported.
+    target = ceiling[0].advertised
+    if not isinstance(target, int) or target <= 0:
         return []
 
-    n = _next_power_of_two(measured)
-    return [
-        "## Fix",
-        "",
-        f"--batch-size {n} --ubatch-size {n}",
-    ]
+    n = _next_power_of_two(target)
+    if report.config.backend is Backend.LLAMACPP:
+        return ["## Fix", "", f"--batch-size {n} --ubatch-size {n}"]
+    if report.config.backend is Backend.OLLAMA:
+        # Ollama has no batch flags; its ceiling is the context length, set per
+        # request (``num_ctx``), per model (Modelfile) or server-wide.
+        return ["## Fix", "", f"OLLAMA_CONTEXT_LENGTH={n} (or num_ctx={n})"]
+    # Any other backend: the shortfall is reported, but naming flags we have not
+    # verified for it would be a confident guess dressed as a remedy.
+    return []
 
 
 def to_markdown(
