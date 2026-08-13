@@ -14,8 +14,10 @@ other hermetic test does.
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -233,6 +235,111 @@ def test_end_to_end_truncation_at_4096_is_measured_within_five_percent(
             f"measured boundary {boundary} deviates from the true 4096-token "
             f"cut by more than {_TRUNCATION_TOLERANCE:.0%}"
         )
+
+
+def _free_port() -> int:
+    """Return an ephemeral port that is free right now.
+
+    Bind a socket to port 0, read the OS-assigned port, then close it so the
+    fake server (started as a real subprocess below) can bind it. A tiny race
+    window exists but is negligible in a hermetic test environment.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _wait_until_reachable(base_url: str, timeout: float = 60.0) -> None:
+    """Poll ``/props`` until the fake server answers or ``timeout`` elapses.
+
+    The fake server is a real OS subprocess; its startup is asynchronous, so
+    the probe must not race it. We poll the compatibility surface rather than
+    sleeping a fixed amount, so a slow first-boot is tolerated within reason.
+    """
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            import httpx
+
+            with httpx.Client(timeout=2.0) as client:
+                response = client.get(f"{base_url}/props")
+                if response.status_code == 200:
+                    return
+        except Exception as exc:  # noqa: BLE001 - any connect/read error means not ready
+            last_error = exc
+        time.sleep(0.1)
+    raise TimeoutError(
+        f"fake server did not become reachable at {base_url}: {last_error}"
+    ) from last_error
+
+
+def test_end_to_end_fake_server_subprocess_truncates_at_4096_within_five_percent() -> None:
+    """The REAL fake server, launched as a subprocess, is caught truncating.
+
+    Unlike the ASGI-seam tests above, this integration test boots
+    ``tests/fake_server.py`` as a genuine OS process bound to a real port and
+    drives the real ``llmprobe`` CLI over real HTTP against it. The server
+    silently truncates incoming prompts at 4096 tokens; llmprobe must measure
+    a boundary within 5% of 4096 and report the ``silent_truncation`` verdict —
+    catching the same lie a real deployment would.
+    """
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "tests.fake_server",
+            "--port",
+            str(port),
+            "--truncate-len",
+            str(TRUNCATION_CTX),
+            "--mode",
+            "silent",
+        ],
+        cwd=str(_PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_until_reachable(base_url)
+        result = _run(
+            [
+                sys.executable,
+                "-m",
+                "llmprobe",
+                base_url,
+                "--endpoint",
+                "chat",
+                "--json",
+            ]
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        payload = json.loads(result.stdout)
+        assert payload["capacity"], "expected the capacity probe to report"
+        for entry in payload["capacity"]:
+            verdict = entry["cliff_behavior"]["value"]
+            assert verdict == "silent_truncation", (
+                f"fake server was classified {verdict!r}, expected "
+                "'silent_truncation'"
+            )
+            boundary = entry["max_accepted_tokens"]["value"]
+            tolerance = TRUNCATION_CTX * _TRUNCATION_TOLERANCE
+            lower = TRUNCATION_CTX - tolerance
+            upper = TRUNCATION_CTX + tolerance
+            assert lower <= boundary <= upper, (
+                f"measured boundary {boundary} deviates from the true "
+                f"4096-token cut by more than {_TRUNCATION_TOLERANCE:.0%}"
+            )
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=10)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
