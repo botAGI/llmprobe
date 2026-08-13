@@ -37,6 +37,7 @@ def make_mock_server(
     tokenize_enabled: bool = True,
     required_model: str | None = None,
     slots_disabled: bool = False,
+    chat_marker_reply: str | None = None,
 ) -> FastAPI:
     """Build a scripted mock inference server.
 
@@ -72,6 +73,15 @@ def make_mock_server(
     ``slots_disabled`` is ``True``, ``/slots`` answers ``501`` (``--no-slots``
     mode) so a probe must tolerate an unavailable per-slot cross-check without
     failing.
+
+    When ``chat_marker_reply`` is set, the chat endpoint FULLY accepts every
+    input (never errors, never truncates — a true ``honest`` server for the
+    input) but always echoes exactly that string as the assistant reply rather
+    than the prompt. This models a server that fully accepts the probe input yet
+    returns a marker that does not reliably survive verbatim (e.g. the truncated
+    ``'ZQ'`` instead of the full ``'ZQX7'`` canary). It is used to prove the
+    marker-echo calibration refuses to report a confident ``silent_truncation``
+    verdict it cannot verify.
     """
     if behavior not in ("honest", "silent_truncation", "hard_error"):
         raise ValueError(f"unknown behavior: {behavior!r}")
@@ -265,7 +275,16 @@ def make_mock_server(
                     "code": 500,
                 }
             }
-        if behavior == "silent_truncation" and len(tokens) > max_tokens:
+        if chat_marker_reply is not None:
+            # A server that FULLY accepts every input (never errors, never
+            # truncates) but echoes a fixed marker string instead of the
+            # prompt — e.g. a truncated form of the canary (``'ZQ'`` rather
+            # than the full ``'ZQX7'``) because the marker is tokenised in
+            # pieces so only part survives verbatim. The real probe reports
+            # UNKNOWN (never ``silent_truncation``) when it cannot verify the
+            # marker survived.
+            reply = chat_marker_reply
+        elif behavior == "silent_truncation" and len(tokens) > max_tokens:
             # Only the last ``max_tokens`` tokens survive; the head declared at
             # the front (the canary marker) is dropped, so the reply echoes a
             # retained token that is not the canary.
