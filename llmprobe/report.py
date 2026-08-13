@@ -399,6 +399,8 @@ def to_markdown(
             config.sources.get("total_slots", Provenance.UNKNOWN),
         )
     )
+    rows.extend(_capacity_rows(report))
+
     total_requests_spent = sum(
         cap.probe_requests_used for cap in report.capacity
     )
